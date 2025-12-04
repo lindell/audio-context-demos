@@ -1,3 +1,3 @@
-# audio-context-noise-generator
+# audio-context-demos
 
 Vibe coded with Gemnini. Just for testing.
