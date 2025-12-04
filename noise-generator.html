@@ -41,7 +41,7 @@
 </head>
 <body class="bg-gray-900 text-white min-h-screen flex flex-col items-center justify-center p-4 font-sans">
 
-    <div class="max-w-md w-full bg-gray-800 rounded-xl shadow-2xl overflow-hidden border border-gray-700">
+    <div class="max-w-3xl w-full bg-gray-800 rounded-xl shadow-2xl overflow-hidden border border-gray-700">
         <!-- Header -->
         <div class="p-6 border-b border-gray-700 bg-gray-800">
             <h1 class="text-xl font-bold text-blue-400 flex items-center gap-2">
@@ -50,7 +50,7 @@
                 </svg>
                 Noise Generator
             </h1>
-            <p class="text-xs text-gray-400 mt-1">AudioWorkletNode &bull; Configurable Latency</p>
+            <p class="text-xs text-gray-400 mt-1">AudioWorkletNode &bull; Advanced Context Configuration</p>
         </div>
 
         <!-- Visualizer Canvas -->
@@ -78,7 +78,7 @@
             </button>
 
             <!-- Settings Group -->
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-6">
                 <!-- Volume Control -->
                 <div class="space-y-2">
                     <div class="flex justify-between text-xs text-gray-400 font-medium uppercase tracking-wider">
@@ -103,17 +103,56 @@
                         <input type="number" id="latencyCustom" step="0.01" min="0" placeholder="0.1" class="hidden bg-gray-700 text-sm text-white rounded px-2 py-1 w-20 border border-gray-600 focus:outline-none focus:border-blue-400 text-center">
                     </div>
                 </div>
+
+                <!-- Render Size Configuration -->
+                <div class="space-y-2">
+                    <div class="flex justify-between text-xs text-gray-400 font-medium uppercase tracking-wider">
+                        <label for="renderSizeSelect">Render Size Hint</label>
+                    </div>
+                    <div class="flex gap-2">
+                        <select id="renderSizeSelect" class="bg-gray-700 text-sm text-white rounded px-2 py-1 w-full border border-gray-600 focus:outline-none focus:border-blue-400 transition-colors">
+                            <option value="default" selected>Default</option>
+                            <option value="custom">Custom (frames)</option>
+                        </select>
+                        <input type="number" id="renderSizeCustom" step="1" min="0" placeholder="128" class="hidden bg-gray-700 text-sm text-white rounded px-2 py-1 w-20 border border-gray-600 focus:outline-none focus:border-blue-400 text-center">
+                    </div>
+                </div>
+
+                <!-- Sample Rate Configuration -->
+                <div class="space-y-2">
+                    <div class="flex justify-between text-xs text-gray-400 font-medium uppercase tracking-wider">
+                        <label for="sampleRateSelect">Sample Rate</label>
+                    </div>
+                    <div class="flex gap-2">
+                        <select id="sampleRateSelect" class="bg-gray-700 text-sm text-white rounded px-2 py-1 w-full border border-gray-600 focus:outline-none focus:border-blue-400 transition-colors">
+                            <option value="44100" selected>44.1 kHz</option>
+                            <option value="48000">48 kHz</option>
+                            <option value="88200">88.2 kHz</option>
+                            <option value="96000">96 kHz</option>
+                            <option value="custom">Custom (Hz)</option>
+                        </select>
+                        <input type="number" id="sampleRateCustom" step="100" min="8000" placeholder="44100" class="hidden bg-gray-700 text-sm text-white rounded px-2 py-1 w-20 border border-gray-600 focus:outline-none focus:border-blue-400 text-center">
+                    </div>
+                </div>
             </div>
 
             <!-- Stats/Info -->
-            <div class="grid grid-cols-2 gap-4 pt-2">
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-4 pt-2">
                 <div class="bg-gray-700/50 p-3 rounded border border-gray-600">
                     <div class="text-[10px] uppercase tracking-wider text-gray-400">Context State</div>
                     <div id="ctxState" class="text-sm font-mono text-green-400">Closed</div>
                 </div>
                 <div class="bg-gray-700/50 p-3 rounded border border-gray-600">
-                    <div class="text-[10px] uppercase tracking-wider text-gray-400">Active Hint</div>
+                    <div class="text-[10px] uppercase tracking-wider text-gray-400">Active Latency</div>
                     <div id="activeHint" class="text-sm font-mono text-gray-500">-</div>
+                </div>
+                <div class="bg-gray-700/50 p-3 rounded border border-gray-600">
+                    <div class="text-[10px] uppercase tracking-wider text-gray-400">Render Size</div>
+                    <div id="activeRenderSize" class="text-sm font-mono text-gray-500">-</div>
+                </div>
+                <div class="bg-gray-700/50 p-3 rounded border border-gray-600">
+                    <div class="text-[10px] uppercase tracking-wider text-gray-400">Sample Rate</div>
+                    <div id="activeSampleRate" class="text-sm font-mono text-gray-500">-</div>
                 </div>
             </div>
         </div>
@@ -159,9 +198,20 @@
         const volumeSlider = document.getElementById('volume');
         const volValue = document.getElementById('volValue');
         
+        // Latency Controls
         const latencySelect = document.getElementById('latencySelect');
         const latencyCustom = document.getElementById('latencyCustom');
         const activeHintDisplay = document.getElementById('activeHint');
+
+        // Render Size Controls
+        const renderSizeSelect = document.getElementById('renderSizeSelect');
+        const renderSizeCustom = document.getElementById('renderSizeCustom');
+        const activeRenderSizeDisplay = document.getElementById('activeRenderSize');
+
+        // Sample Rate Controls
+        const sampleRateSelect = document.getElementById('sampleRateSelect');
+        const sampleRateCustom = document.getElementById('sampleRateCustom');
+        const activeSampleRateDisplay = document.getElementById('activeSampleRate');
         
         const ctxStateDisplay = document.getElementById('ctxState');
         const statusOverlay = document.getElementById('statusOverlay');
@@ -177,7 +227,7 @@
         resizeCanvas();
 
         // ---------------------------------------------------------
-        // 3. Helper Logic (Latency Switching)
+        // 3. Helper Logic (Config Switching)
         // ---------------------------------------------------------
         
         async function restartAudio() {
@@ -197,31 +247,60 @@
             await initAudio();
         }
 
-        // Listener for Dropdown
+        // --- Latency Listeners ---
         latencySelect.addEventListener('change', async (e) => {
             const isCustom = e.target.value === 'custom';
-            
-            // Toggle custom input visibility
             if (isCustom) {
                 latencyCustom.classList.remove('hidden');
                 latencyCustom.focus();
-                // We don't restart yet for Custom; wait for user input
             } else {
                 latencyCustom.classList.add('hidden');
-                // If audio is already running/initialized, restart with new hint
-                if (audioContext) {
-                    await restartAudio();
-                }
+                if (audioContext) await restartAudio();
             }
         });
 
-        // Listener for Custom Input
-        // Fires when user hits Enter or clicks away
         latencyCustom.addEventListener('change', async () => {
             if (audioContext && latencySelect.value === 'custom') {
                 await restartAudio();
             }
         });
+
+        // --- Render Size Listeners ---
+        renderSizeSelect.addEventListener('change', async (e) => {
+            const isCustom = e.target.value === 'custom';
+            if (isCustom) {
+                renderSizeCustom.classList.remove('hidden');
+                renderSizeCustom.focus();
+            } else {
+                renderSizeCustom.classList.add('hidden');
+                if (audioContext) await restartAudio();
+            }
+        });
+
+        renderSizeCustom.addEventListener('change', async () => {
+            if (audioContext && renderSizeSelect.value === 'custom') {
+                await restartAudio();
+            }
+        });
+
+        // --- Sample Rate Listeners ---
+        sampleRateSelect.addEventListener('change', async (e) => {
+            const isCustom = e.target.value === 'custom';
+            if (isCustom) {
+                sampleRateCustom.classList.remove('hidden');
+                sampleRateCustom.focus();
+            } else {
+                sampleRateCustom.classList.add('hidden');
+                if (audioContext) await restartAudio();
+            }
+        });
+
+        sampleRateCustom.addEventListener('change', async () => {
+            if (audioContext && sampleRateSelect.value === 'custom') {
+                await restartAudio();
+            }
+        });
+
 
         // ---------------------------------------------------------
         // 4. Audio Initialization Logic
@@ -229,31 +308,64 @@
         async function initAudio() {
             try {
                 // Determine Latency Hint
-                let hint = latencySelect.value;
-                if (hint === 'custom') {
+                let latHint = latencySelect.value;
+                if (latHint === 'custom') {
                     const val = parseFloat(latencyCustom.value);
-                    // Default to 0 (interactive) if invalid number
-                    hint = isNaN(val) ? 0 : val;
+                    latHint = isNaN(val) ? 0 : val;
                 }
 
-                // We do NOT disable the controls anymore
-                // latencySelect.disabled = true; 
-                // latencyCustom.disabled = true;
+                // Determine Render Size Hint
+                let rendHint = renderSizeSelect.value;
+                if (rendHint === 'custom') {
+                    const val = parseInt(renderSizeCustom.value, 10);
+                    rendHint = isNaN(val) ? 'default' : val;
+                }
+
+                // Determine Sample Rate
+                let sRate = sampleRateSelect.value;
+                if (sRate === 'custom') {
+                    const val = parseInt(sampleRateCustom.value, 10);
+                    sRate = isNaN(val) ? 44100 : val;
+                } else {
+                    sRate = parseInt(sRate, 10);
+                }
 
                 // Create Blob for Worklet
                 const blob = new Blob([workletCode], { type: 'application/javascript' });
                 const workletUrl = URL.createObjectURL(blob);
 
-                // Create Context
-                audioContext = new AudioContext({ 
-                    latencyHint: hint,
-                    sampleRate: 44100 
-                });
+                // Create Context with all options
+                const ctxOptions = { 
+                    latencyHint: latHint,
+                    sampleRate: sRate
+                };
+                
+                // Only add renderSizeHint if it is not default (or just pass 'default')
+                if (rendHint !== undefined) {
+                    ctxOptions.renderSizeHint = rendHint;
+                }
 
-                // Display the active hint in the UI
-                activeHintDisplay.innerText = (typeof hint === 'number') ? `${hint}s` : hint;
+                audioContext = new AudioContext(ctxOptions);
+
+                // Update Display: Latency
+                activeHintDisplay.innerText = (typeof latHint === 'number') ? `${latHint}s` : latHint;
                 activeHintDisplay.classList.add('text-purple-400');
                 activeHintDisplay.classList.remove('text-gray-500');
+
+                // Update Display: Render Size
+                let actualRenderSize = "unknown";
+                if (typeof audioContext.renderQuantumSize !== 'undefined') {
+                    actualRenderSize = audioContext.renderQuantumSize;
+                }
+                activeRenderSizeDisplay.innerText = (typeof actualRenderSize === 'number') ? `${actualRenderSize} f` : actualRenderSize;
+                activeRenderSizeDisplay.classList.add('text-purple-400');
+                activeRenderSizeDisplay.classList.remove('text-gray-500');
+
+                // Update Display: Sample Rate (Read actual rate from context)
+                const actualSR = audioContext.sampleRate;
+                activeSampleRateDisplay.innerText = `${actualSR} Hz`;
+                activeSampleRateDisplay.classList.add('text-purple-400');
+                activeSampleRateDisplay.classList.remove('text-gray-500');
 
                 // Add Module
                 await audioContext.audioWorklet.addModule(workletUrl);
@@ -270,14 +382,14 @@
                 gainNode.connect(analyser);
                 analyser.connect(audioContext.destination);
 
-                // Update UI (defaults to running state)
+                // Update UI
                 updateUIState(true);
                 drawVisualizer();
 
             } catch (error) {
                 console.error("Audio Init Failed:", error);
                 btnText.innerText = "Error (See Console)";
-                toggleBtn.classList.add('bg-red-600');
+                toggleBtn.classList.replace('bg-blue-600', 'bg-red-600');
             }
         }
 
@@ -343,9 +455,6 @@
 
             function render() {
                 animationId = requestAnimationFrame(render);
-                // Continue loop even if suspended to keep visual state, 
-                // but usually data won't update if suspended.
-                // We'll just let it run.
                 
                 analyser.getByteTimeDomainData(dataArray);
 
