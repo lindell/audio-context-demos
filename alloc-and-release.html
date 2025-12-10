@@ -347,13 +347,13 @@
                 // Note: We DO NOT nullify audioCtx here anymore.
                 // We rely on Step 8 for that.
                 
-                // Reset other buttons for safety
+                // Reset Create Node button as we can't add to closed context easily in this flow
                 btnCreateNode.disabled = true;
-                btnReturnFalse.disabled = true;
-                btnClosePort.disabled = true;
-                btnDropRef.disabled = true;
-                btnDropBuffer.disabled = true;
-                btnDropBuffer.classList.remove('clicked-state');
+
+                // CHANGED: We no longer disable the cleanup buttons here.
+                // This allows the user to return false, close ports, or drop refs 
+                // even after the context is closed.
+                log('Context closed. You can still perform node cleanup steps (3-6).', 'info');
 
             } catch (err) {
                 log(`Error closing context: ${err.message}`, 'error');
