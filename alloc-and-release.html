@@ -73,6 +73,11 @@
                         <span>6. Close AudioContext</span>
                         <span class="text-xs bg-gray-800 text-gray-200 py-1 px-2 rounded opacity-0 group-hover:opacity-100 transition">ctx.close()</span>
                     </button>
+
+                    <button id="btn-drop-ctx-ref" class="w-full py-3 px-4 bg-orange-600 hover:bg-orange-500 rounded-lg font-medium transition flex items-center justify-between group disabled:opacity-50 disabled:cursor-not-allowed" disabled>
+                        <span>7. Remove Context Ref</span>
+                        <span class="text-xs bg-orange-800 text-orange-200 py-1 px-2 rounded opacity-0 group-hover:opacity-100 transition">ctx = null</span>
+                    </button>
                 </div>
             </div>
 
@@ -153,6 +158,7 @@
         const btnDropRef = document.getElementById('btn-drop-ref');
         const btnDropBuffer = document.getElementById('btn-drop-buffer');
         const btnCloseCtx = document.getElementById('btn-close-ctx');
+        const btnDropCtxRef = document.getElementById('btn-drop-ctx-ref');
         
         const statusCtx = document.getElementById('status-ctx');
         const statusNode = document.getElementById('status-node');
@@ -188,9 +194,10 @@
         function updateStatus() {
             if (audioCtx) {
                 statusCtx.innerText = audioCtx.state;
-                statusCtx.className = 'text-xl font-mono text-green-400 mt-1';
+                if (audioCtx.state === 'running') statusCtx.className = 'text-xl font-mono text-green-400 mt-1';
+                else statusCtx.className = 'text-xl font-mono text-orange-400 mt-1';
             } else {
-                statusCtx.innerText = "Closed/Null";
+                statusCtx.innerText = "Null";
                 statusCtx.className = 'text-xl font-mono text-gray-500 mt-1';
             }
 
@@ -219,6 +226,7 @@
             btnCreateCtx.classList.add('opacity-50');
             btnCreateNode.disabled = false;
             btnCloseCtx.disabled = false;
+            btnDropCtxRef.disabled = false;
         });
 
         // 2. Create AudioWorkletNode
@@ -243,12 +251,6 @@
                     }
                 };
 
-                // Connect to destination strictly so it processes, 
-                // though strictly not needed if it returns true.
-                // We won't connect it to output to simulate a source node behavior,
-                // but usually, browsers require connection or return true.
-                // We'll leave it unconnected to output to test the "Active Source" behavior via return true.
-                
                 log('Node created. 16MB Buffer allocated in Worklet.', 'success');
                 updateStatus();
 
@@ -279,6 +281,11 @@
                 log('Reference already removed.', 'warn');
                 return;
             }
+            
+            // Explicitly remove listener
+            workletNode.port.onmessage = null;
+            log('Message listener removed.', 'info');
+
             workletNode = null;
             log('Main thread reference (workletNode) set to null.', 'warn');
             log('Note: JS reference is gone. Garbage collection is now possible if process() returns false.', 'info');
@@ -308,15 +315,13 @@
             if (!audioCtx) return;
             try {
                 await audioCtx.close();
-                log('AudioContext closed and resources released.', 'warn');
-                audioCtx = null;
+                log('AudioContext closed (suspended). Reference still exists.', 'warn');
                 updateStatus();
                 
                 btnCloseCtx.disabled = true;
                 
-                // Allow restarting the flow
-                btnCreateCtx.disabled = false;
-                btnCreateCtx.classList.remove('opacity-50');
+                // Note: We DO NOT nullify audioCtx here anymore.
+                // We rely on Step 7 for that.
                 
                 // Reset other buttons for safety
                 btnCreateNode.disabled = true;
@@ -329,6 +334,32 @@
                 log(`Error closing context: ${err.message}`, 'error');
             }
         });
+
+        // 7. Remove Context Reference
+        btnDropCtxRef.addEventListener('click', () => {
+            if (!audioCtx) {
+                log('Context reference already removed.', 'warn');
+                return;
+            }
+            audioCtx = null;
+            log('AudioContext reference (audioCtx) set to null.', 'warn');
+            updateStatus();
+            
+            btnDropCtxRef.disabled = true;
+            btnCloseCtx.disabled = true; // Can't close if null
+            
+            // Allow restarting the flow only after fully clearing
+            btnCreateCtx.disabled = false;
+            btnCreateCtx.classList.remove('opacity-50');
+            
+            // Ensure others are reset
+            btnCreateNode.disabled = true;
+            btnReturnFalse.disabled = true;
+            btnDropRef.disabled = true;
+            btnDropBuffer.disabled = true;
+            btnDropBuffer.classList.remove('clicked-state');
+        });
+
     </script>
 </body>
 </html>
