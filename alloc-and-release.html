@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AudioWorklet Memory Management Demo</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Custom scrollbar for the log window */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #1f2937;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #4b5563;
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #6b7280;
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-100 font-sans min-h-screen p-6 flex flex-col items-center">
+
+    <div class="max-w-3xl w-full space-y-8">
+        
+        <!-- Header -->
+        <div class="text-center space-y-2">
+            <h1 class="text-3xl font-bold text-blue-400">AudioWorklet Memory Demo</h1>
+            <p class="text-gray-400">Manage AudioContext lifecycle and observe memory allocation.</p>
+        </div>
+
+        <!-- Main Dashboard -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            
+            <!-- Controls -->
+            <div class="bg-gray-800 rounded-xl p-6 shadow-lg border border-gray-700 space-y-4">
+                <h2 class="text-xl font-semibold border-b border-gray-700 pb-2 mb-4">Operations</h2>
+                
+                <div class="space-y-3">
+                    <button id="btn-create-ctx" class="w-full py-3 px-4 bg-blue-600 hover:bg-blue-500 rounded-lg font-medium transition flex items-center justify-between group">
+                        <span>1. Create AudioContext</span>
+                        <span class="text-xs bg-blue-800 text-blue-200 py-1 px-2 rounded opacity-0 group-hover:opacity-100 transition">Init</span>
+                    </button>
+
+                    <button id="btn-create-node" class="w-full py-3 px-4 bg-green-600 hover:bg-green-500 rounded-lg font-medium transition flex items-center justify-between group disabled:opacity-50 disabled:cursor-not-allowed" disabled>
+                        <span>2. Create Node (Alloc 16MB)</span>
+                        <span class="text-xs bg-green-800 text-green-200 py-1 px-2 rounded opacity-0 group-hover:opacity-100 transition">Returns True</span>
+                    </button>
+
+                    <button id="btn-return-false" class="w-full py-3 px-4 bg-yellow-600 hover:bg-yellow-500 rounded-lg font-medium transition flex items-center justify-between group disabled:opacity-50 disabled:cursor-not-allowed" disabled>
+                        <span>3. Make Node Return False</span>
+                        <span class="text-xs bg-yellow-800 text-yellow-200 py-1 px-2 rounded opacity-0 group-hover:opacity-100 transition">Stops Process</span>
+                    </button>
+
+                    <div class="border-t border-gray-700 my-4"></div>
+
+                    <button id="btn-drop-ref" class="w-full py-3 px-4 bg-red-600 hover:bg-red-500 rounded-lg font-medium transition flex items-center justify-between group disabled:opacity-50 disabled:cursor-not-allowed" disabled>
+                        <span>4. Remove Main Thread Ref</span>
+                        <span class="text-xs bg-red-800 text-red-200 py-1 px-2 rounded opacity-0 group-hover:opacity-100 transition">node = null</span>
+                    </button>
+
+                    <button id="btn-drop-buffer" class="w-full py-3 px-4 bg-purple-600 hover:bg-purple-500 rounded-lg font-medium transition flex items-center justify-between group disabled:opacity-50 disabled:cursor-not-allowed" disabled>
+                        <span>5. Remove Buffer (Worklet)</span>
+                        <span class="text-xs bg-purple-800 text-purple-200 py-1 px-2 rounded opacity-0 group-hover:opacity-100 transition">buffer = null</span>
+                    </button>
+
+                    <div class="border-t border-gray-700 my-4"></div>
+
+                    <button id="btn-close-ctx" class="w-full py-3 px-4 bg-gray-600 hover:bg-gray-500 rounded-lg font-medium transition flex items-center justify-between group disabled:opacity-50 disabled:cursor-not-allowed" disabled>
+                        <span>6. Close AudioContext</span>
+                        <span class="text-xs bg-gray-800 text-gray-200 py-1 px-2 rounded opacity-0 group-hover:opacity-100 transition">ctx.close()</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Logs & Status -->
+            <div class="flex flex-col space-y-6">
+                <!-- Status Cards -->
+                <div class="grid grid-cols-2 gap-4">
+                    <div class="bg-gray-800 p-4 rounded-lg border border-gray-700">
+                        <div class="text-gray-400 text-xs uppercase tracking-wider">Context State</div>
+                        <div id="status-ctx" class="text-xl font-mono text-gray-500 mt-1">None</div>
+                    </div>
+                    <div class="bg-gray-800 p-4 rounded-lg border border-gray-700">
+                        <div class="text-gray-400 text-xs uppercase tracking-wider">Node Status</div>
+                        <div id="status-node" class="text-xl font-mono text-gray-500 mt-1">None</div>
+                    </div>
+                </div>
+
+                <!-- Console Log -->
+                <div class="flex-1 bg-black rounded-xl p-4 font-mono text-sm overflow-hidden flex flex-col border border-gray-700">
+                    <div class="flex justify-between items-center mb-2 pb-2 border-b border-gray-800">
+                        <span class="text-gray-400">Event Log</span>
+                        <button onclick="clearLog()" class="text-xs text-gray-500 hover:text-white">Clear</button>
+                    </div>
+                    <div id="log-container" class="flex-1 overflow-y-auto space-y-1 pr-2">
+                        <!-- Logs go here -->
+                        <div class="text-gray-600 italic">Waiting for interaction...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- Worklet Processor Code (as a string) ---
+        const workletCode = `
+            class MemoryProcessor extends AudioWorkletProcessor {
+                constructor() {
+                    super();
+                    // Allocate 16MB Buffer (Float32 is 4 bytes per element)
+                    // 16 * 1024 * 1024 / 4 = 4,194,304 elements
+                    this.largeBuffer = new Float32Array(4194304);
+                    
+                    // Fill with some data to ensure allocation pages are touched
+                    for(let i=0; i<this.largeBuffer.length; i+=1000) {
+                        this.largeBuffer[i] = Math.random();
+                    }
+                    
+                    this.keepAlive = true;
+                    
+                    this.port.onmessage = (e) => {
+                        if (e.data.type === 'STOP_PROCESS') {
+                            this.keepAlive = false;
+                            this.port.postMessage({ type: 'LOG', message: 'Worklet: process() will now return false' });
+                        }
+                        if (e.data.type === 'DROP_BUFFER') {
+                            this.largeBuffer = null;
+                            this.port.postMessage({ type: 'LOG', message: 'Worklet: Reference to 16MB buffer removed' });
+                        }
+                    };
+                }
+
+                process(inputs, outputs, parameters) {
+                    // Return true to keep node alive, false to allow GC if unconnected
+                    return this.keepAlive;
+                }
+            }
+            registerProcessor('memory-processor', MemoryProcessor);
+        `;
+
+        // --- Main Thread Variables ---
+        let audioCtx = null;
+        let workletNode = null;
+
+        // --- DOM Elements ---
+        const btnCreateCtx = document.getElementById('btn-create-ctx');
+        const btnCreateNode = document.getElementById('btn-create-node');
+        const btnReturnFalse = document.getElementById('btn-return-false');
+        const btnDropRef = document.getElementById('btn-drop-ref');
+        const btnDropBuffer = document.getElementById('btn-drop-buffer');
+        const btnCloseCtx = document.getElementById('btn-close-ctx');
+        
+        const statusCtx = document.getElementById('status-ctx');
+        const statusNode = document.getElementById('status-node');
+        const logContainer = document.getElementById('log-container');
+
+        // --- Logging Utility ---
+        function log(msg, type = 'info') {
+            const el = document.createElement('div');
+            const timestamp = new Date().toLocaleTimeString().split(' ')[0];
+            
+            let color = 'text-gray-300';
+            if (type === 'success') color = 'text-green-400';
+            if (type === 'warn') color = 'text-yellow-400';
+            if (type === 'error') color = 'text-red-400';
+            if (type === 'worklet') color = 'text-purple-400';
+
+            el.className = `${color} break-all`;
+            el.innerHTML = `<span class="text-gray-600 mr-2">[${timestamp}]</span>${msg}`;
+            
+            // Remove placeholder if exists
+            if (logContainer.children[0]?.classList.contains('italic')) {
+                logContainer.innerHTML = '';
+            }
+
+            logContainer.appendChild(el);
+            logContainer.scrollTop = logContainer.scrollHeight;
+        }
+
+        function clearLog() {
+            logContainer.innerHTML = '<div class="text-gray-600 italic">Log cleared.</div>';
+        }
+
+        function updateStatus() {
+            if (audioCtx) {
+                statusCtx.innerText = audioCtx.state;
+                statusCtx.className = 'text-xl font-mono text-green-400 mt-1';
+            } else {
+                statusCtx.innerText = "Closed/Null";
+                statusCtx.className = 'text-xl font-mono text-gray-500 mt-1';
+            }
+
+            if (workletNode) {
+                statusNode.innerText = "Active Ref";
+                statusNode.className = 'text-xl font-mono text-blue-400 mt-1';
+            } else {
+                statusNode.innerText = "No Ref";
+                statusNode.className = 'text-xl font-mono text-gray-500 mt-1';
+            }
+        }
+
+        // --- Button Actions ---
+
+        // 1. Create Audio Context
+        btnCreateCtx.addEventListener('click', () => {
+            if (audioCtx) {
+                log('AudioContext already exists.', 'warn');
+                return;
+            }
+            audioCtx = new AudioContext();
+            log('AudioContext created.', 'success');
+            updateStatus();
+            
+            btnCreateCtx.disabled = true;
+            btnCreateCtx.classList.add('opacity-50');
+            btnCreateNode.disabled = false;
+            btnCloseCtx.disabled = false;
+        });
+
+        // 2. Create AudioWorkletNode
+        btnCreateNode.addEventListener('click', async () => {
+            if (!audioCtx) return;
+
+            try {
+                log('Creating Worklet Module...', 'info');
+                
+                // Create Blob from code string
+                const blob = new Blob([workletCode], { type: 'application/javascript' });
+                const url = URL.createObjectURL(blob);
+
+                await audioCtx.audioWorklet.addModule(url);
+                
+                workletNode = new AudioWorkletNode(audioCtx, 'memory-processor');
+                
+                // Handle messages from Worklet
+                workletNode.port.onmessage = (e) => {
+                    if (e.data.type === 'LOG') {
+                        log(e.data.message, 'worklet');
+                    }
+                };
+
+                // Connect to destination strictly so it processes, 
+                // though strictly not needed if it returns true.
+                // We won't connect it to output to simulate a source node behavior,
+                // but usually, browsers require connection or return true.
+                // We'll leave it unconnected to output to test the "Active Source" behavior via return true.
+                
+                log('Node created. 16MB Buffer allocated in Worklet.', 'success');
+                updateStatus();
+
+                btnCreateNode.disabled = true;
+                btnReturnFalse.disabled = false;
+                btnDropRef.disabled = false;
+                btnDropBuffer.disabled = false;
+
+            } catch (err) {
+                log(`Error: ${err.message}`, 'error');
+            }
+        });
+
+        // 3. Return False
+        btnReturnFalse.addEventListener('click', () => {
+            if (!workletNode) {
+                log('No reference to node available to send message!', 'error');
+                return;
+            }
+            workletNode.port.postMessage({ type: 'STOP_PROCESS' });
+            log('Sent STOP_PROCESS command.', 'info');
+            btnReturnFalse.disabled = true;
+        });
+
+        // 4. Remove Main Thread Reference
+        btnDropRef.addEventListener('click', () => {
+            if (!workletNode) {
+                log('Reference already removed.', 'warn');
+                return;
+            }
+            workletNode = null;
+            log('Main thread reference (workletNode) set to null.', 'warn');
+            log('Note: JS reference is gone. Garbage collection is now possible if process() returns false.', 'info');
+            updateStatus();
+            btnDropRef.disabled = true;
+            
+            // Check if user trapped themselves
+            if (!btnDropBuffer.disabled && !btnDropBuffer.classList.contains('clicked-state')) {
+                log('Warning: You dropped the reference before clearing the buffer. You can no longer send messages to the worklet.', 'warn');
+            }
+        });
+
+        // 5. Remove Buffer Reference (Inside Worklet)
+        btnDropBuffer.addEventListener('click', () => {
+            if (!workletNode) {
+                log('Cannot send command: Main thread reference is lost.', 'error');
+                return;
+            }
+            workletNode.port.postMessage({ type: 'DROP_BUFFER' });
+            log('Sent DROP_BUFFER command.', 'info');
+            btnDropBuffer.disabled = true;
+            btnDropBuffer.classList.add('clicked-state');
+        });
+
+        // 6. Close Audio Context
+        btnCloseCtx.addEventListener('click', async () => {
+            if (!audioCtx) return;
+            try {
+                await audioCtx.close();
+                log('AudioContext closed and resources released.', 'warn');
+                audioCtx = null;
+                updateStatus();
+                
+                btnCloseCtx.disabled = true;
+                
+                // Allow restarting the flow
+                btnCreateCtx.disabled = false;
+                btnCreateCtx.classList.remove('opacity-50');
+                
+                // Reset other buttons for safety
+                btnCreateNode.disabled = true;
+                btnReturnFalse.disabled = true;
+                btnDropRef.disabled = true;
+                btnDropBuffer.disabled = true;
+                btnDropBuffer.classList.remove('clicked-state');
+
+            } catch (err) {
+                log(`Error closing context: ${err.message}`, 'error');
+            }
+        });
+    </script>
+</body>
+</html>
