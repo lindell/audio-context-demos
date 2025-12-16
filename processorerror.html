@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AudioWorklet Error Handling Demo</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+        
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        
+        .code-font {
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #1f2937; 
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #4b5563; 
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #6b7280; 
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen flex flex-col p-4 md:p-8">
+
+    <div class="max-w-4xl mx-auto w-full flex-grow flex flex-col gap-6">
+        
+        <!-- Header -->
+        <header class="flex flex-col gap-2 border-b border-gray-700 pb-6">
+            <h1 class="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-purple-400">
+                AudioWorklet Error Handler
+            </h1>
+            <p class="text-gray-400 max-w-2xl">
+                This demo initializes an AudioWorklet and demonstrates how to catch critical failures using the 
+                <code class="code-font bg-gray-800 px-1 py-0.5 rounded text-blue-300">processorerror</code> event.
+            </p>
+        </header>
+
+        <!-- Controls Area -->
+        <section class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            
+            <!-- Status Panel -->
+            <div class="bg-gray-800 rounded-xl p-6 border border-gray-700 shadow-lg flex flex-col gap-4">
+                <div class="flex items-center justify-between">
+                    <h2 class="text-xl font-semibold text-gray-200">Controls</h2>
+                    <span id="status-badge" class="px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wide bg-gray-700 text-gray-400">
+                        Idle
+                    </span>
+                </div>
+                
+                <div class="space-y-3">
+                    <button id="btn-start" class="w-full group relative flex items-center justify-center gap-2 px-4 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-medium transition-all duration-200 shadow-lg shadow-blue-900/20 active:scale-[0.98]">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                        Start Audio Worklet
+                    </button>
+                    
+                    <button id="btn-error" disabled class="w-full group relative flex items-center justify-center gap-2 px-4 py-3 bg-red-600/20 text-red-400 border border-red-900/50 rounded-lg font-medium transition-all duration-200 cursor-not-allowed opacity-50">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+                        Trigger Error
+                    </button>
+                </div>
+
+                <p class="text-sm text-gray-500 mt-2">
+                    1. Click <strong>Start</strong> to load the processor.<br>
+                    2. Click <strong>Trigger Error</strong> to force the processor to throw an exception.
+                </p>
+            </div>
+
+            <!-- Visualization / Info -->
+            <div class="bg-gray-800 rounded-xl p-6 border border-gray-700 shadow-lg flex flex-col justify-between">
+                <div>
+                    <h2 class="text-xl font-semibold text-gray-200 mb-4">How it works</h2>
+                    <ul class="space-y-3 text-sm text-gray-400">
+                        <li class="flex gap-3">
+                            <span class="flex-shrink-0 w-6 h-6 rounded-full bg-blue-900/50 text-blue-400 flex items-center justify-center text-xs font-bold border border-blue-800">1</span>
+                            The Main thread creates an AudioWorkletNode.
+                        </li>
+                        <li class="flex gap-3">
+                            <span class="flex-shrink-0 w-6 h-6 rounded-full bg-purple-900/50 text-purple-400 flex items-center justify-center text-xs font-bold border border-purple-800">2</span>
+                            We send a "throw" message via the MessagePort.
+                        </li>
+                        <li class="flex gap-3">
+                            <span class="flex-shrink-0 w-6 h-6 rounded-full bg-red-900/50 text-red-400 flex items-center justify-center text-xs font-bold border border-red-800">3</span>
+                            The Processor throws an error in its <code>process()</code> method.
+                        </li>
+                        <li class="flex gap-3">
+                            <span class="flex-shrink-0 w-6 h-6 rounded-full bg-green-900/50 text-green-400 flex items-center justify-center text-xs font-bold border border-green-800">4</span>
+                            The Node fires <code>processorerror</code>, which we catch and log.
+                        </li>
+                    </ul>
+                </div>
+            </div>
+
+        </section>
+
+        <!-- Console / Output -->
+        <section class="flex-grow flex flex-col min-h-[300px]">
+            <div class="flex items-center justify-between mb-2">
+                <h2 class="text-lg font-semibold text-gray-300">Event Log</h2>
+                <button onclick="clearLog()" class="text-xs text-gray-500 hover:text-white transition-colors underline">Clear Log</button>
+            </div>
+            
+            <div id="console-output" class="flex-grow code-font bg-black/50 border border-gray-700 rounded-xl p-4 overflow-y-auto text-sm space-y-2 shadow-inner">
+                <div class="text-gray-600 italic">Waiting for interactions...</div>
+            </div>
+        </section>
+
+    </div>
+
+    <!-- 
+        WORKLET PROCESSOR CODE 
+        We use a template string and Blob to load this without a separate file.
+    -->
+    <script id="worklet-code" type="javascript/worker">
+        class ErrorProcessor extends AudioWorkletProcessor {
+            constructor() {
+                super();
+                this.shouldError = false;
+                
+                // Listen for messages from the main thread
+                this.port.onmessage = (event) => {
+                    if (event.data === 'throw') {
+                        console.log('[Processor] Received command to error.');
+                        this.shouldError = true;
+                    }
+                };
+            }
+
+            process(inputs, outputs, parameters) {
+                // If the flag is set, throw an error to crash the processor
+                if (this.shouldError) {
+                    throw new Error("Simulated Critical Failure: Something went wrong in the AudioWorklet!");
+                }
+                
+                // Pass through audio (silence in this demo case since we have no input)
+                return true;
+            }
+        }
+
+        registerProcessor('error-processor', ErrorProcessor);
+    </script>
+
+    <script>
+        // DOM Elements
+        const btnStart = document.getElementById('btn-start');
+        const btnError = document.getElementById('btn-error');
+        const statusBadge = document.getElementById('status-badge');
+        const consoleOutput = document.getElementById('console-output');
+
+        let audioContext = null;
+        let errorNode = null;
+        let isContextActive = false;
+
+        // Logger Utility
+        function log(message, type = 'info', detail = null) {
+            // Clear "Waiting..." text if it exists
+            if (consoleOutput.querySelector('.italic')) {
+                consoleOutput.innerHTML = '';
+            }
+
+            const entry = document.createElement('div');
+            entry.className = 'border-l-2 pl-3 py-1 animate-in fade-in slide-in-from-bottom-2 duration-300';
+            
+            const timestamp = new Date().toLocaleTimeString();
+            
+            let colorClass = 'border-gray-500 text-gray-300';
+            let icon = 'ℹ️';
+
+            if (type === 'success') {
+                colorClass = 'border-green-500 text-green-300 bg-green-900/10';
+                icon = '✅';
+            } else if (type === 'error') {
+                colorClass = 'border-red-500 text-red-300 bg-red-900/10';
+                icon = '🚨';
+            } else if (type === 'warn') {
+                colorClass = 'border-yellow-500 text-yellow-300 bg-yellow-900/10';
+                icon = '⚠️';
+            }
+
+            entry.classList.add(...colorClass.split(' '));
+
+            let html = `
+                <div class="flex items-start justify-between">
+                    <span class="font-bold flex items-center gap-2">${icon} ${message}</span>
+                    <span class="text-xs text-gray-500 font-mono">${timestamp}</span>
+                </div>
+            `;
+
+            if (detail) {
+                html += `<pre class="mt-1 text-xs text-gray-400 overflow-x-auto p-2 bg-black/30 rounded">${detail}</pre>`;
+            }
+
+            entry.innerHTML = html;
+            consoleOutput.appendChild(entry);
+            consoleOutput.scrollTop = consoleOutput.scrollHeight;
+        }
+
+        function clearLog() {
+            consoleOutput.innerHTML = '<div class="text-gray-600 italic">Waiting for interactions...</div>';
+        }
+
+        function updateStatus(status, type) {
+            statusBadge.textContent = status;
+            statusBadge.className = `px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wide ${type === 'active' ? 'bg-green-900 text-green-300 border border-green-700' : type === 'error' ? 'bg-red-900 text-red-300 border border-red-700' : 'bg-gray-700 text-gray-400'}`;
+        }
+
+        // --- Core Audio Logic ---
+
+        async function initAudio() {
+            if (isContextActive) return;
+
+            try {
+                // 1. Create AudioContext
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                
+                // 2. Prepare Blob URL for the processor code
+                const workletCode = document.getElementById('worklet-code').textContent;
+                const blob = new Blob([workletCode], { type: 'application/javascript' });
+                const workletUrl = URL.createObjectURL(blob);
+
+                log('Loading AudioWorklet Module...', 'info');
+
+                // 3. Add Module
+                await audioContext.audioWorklet.addModule(workletUrl);
+                log('Module loaded successfully.', 'success');
+
+                // 4. Create Node
+                errorNode = new AudioWorkletNode(audioContext, 'error-processor');
+
+                // 5. ATTACH THE ERROR LISTENER
+                // This is the core requirement of the prompt
+                errorNode.onprocessorerror = (event) => {
+                    handleProcessorError(event);
+                };
+
+                // Connect to destination (needed for the processor to actually run/render)
+                errorNode.connect(audioContext.destination);
+
+                isContextActive = true;
+                
+                // UI Updates
+                updateStatus('Running', 'active');
+                btnStart.classList.add('hidden');
+                btnError.disabled = false;
+                btnError.classList.remove('cursor-not-allowed', 'opacity-50', 'bg-red-600/20', 'text-red-400');
+                btnError.classList.add('bg-red-600', 'text-white', 'hover:bg-red-500', 'shadow-lg', 'shadow-red-900/30');
+
+            } catch (err) {
+                log('Initialization failed', 'error', err.message);
+                console.error(err);
+            }
+        }
+
+        function triggerError() {
+            if (!errorNode) return;
+            log('Sending "throw" command to processor...', 'warn');
+            
+            // Send message to the processor's port
+            errorNode.port.postMessage('throw');
+        }
+
+        function handleProcessorError(event) {
+            // NOTE: The 'event' is an ErrorEvent.
+            // However, depending on browser security (cross-origin isolation), 
+            // the 'message' property might be generic (e.g., "Script error.").
+            // In a secure context with local blobs, we usually get the message.
+
+            console.error("Processor Error Event:", event);
+            
+            updateStatus('Crashed', 'error');
+
+            const errorDetails = [
+                `Type: ${event.type}`,
+                `Message: "${event.message || 'Unknown error inside worklet'}"`,
+                `Error: "${event.error}"`,
+                `TimeStamp: ${event.timeStamp.toFixed(2)}ms`
+            ].join('\n');
+
+            log('PROCESSOR ERROR CAUGHT!', 'error', errorDetails);
+            
+            // Disable button since the node is effectively dead/muted after an error
+            btnError.disabled = true;
+            btnError.classList.add('opacity-50', 'cursor-not-allowed');
+            btnError.innerHTML = 'Processor Crashed';
+        }
+
+        // Event Listeners
+        btnStart.addEventListener('click', initAudio);
+        btnError.addEventListener('click', triggerError);
+
+    </script>
+</body>
+</html>
