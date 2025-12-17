@@ -60,6 +60,21 @@
                     </span>
                 </div>
                 
+                <!-- Toggles for Listener Types -->
+                <div class="bg-gray-700/50 rounded-lg p-3 space-y-2 border border-gray-600">
+                    <p class="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">Listener Configuration</p>
+                    
+                    <label class="flex items-center space-x-3 cursor-pointer group select-none">
+                        <input type="checkbox" id="chk-prop" checked class="w-4 h-4 accent-blue-500 bg-gray-700 border-gray-600 rounded focus:ring-blue-500 focus:ring-offset-gray-800">
+                        <span class="text-sm text-gray-300 group-hover:text-white transition-colors">Use <code class="bg-gray-900 px-1 rounded text-xs font-mono text-blue-300">.onprocessorerror</code></span>
+                    </label>
+
+                    <label class="flex items-center space-x-3 cursor-pointer group select-none">
+                        <input type="checkbox" id="chk-listener" checked class="w-4 h-4 accent-purple-500 bg-gray-700 border-gray-600 rounded focus:ring-purple-500 focus:ring-offset-gray-800">
+                        <span class="text-sm text-gray-300 group-hover:text-white transition-colors">Use <code class="bg-gray-900 px-1 rounded text-xs font-mono text-purple-300">addEventListener</code></span>
+                    </label>
+                </div>
+
                 <div class="space-y-3">
                     <button id="btn-start" class="w-full group relative flex items-center justify-center gap-2 px-4 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-medium transition-all duration-200 shadow-lg shadow-blue-900/20 active:scale-[0.98]">
                         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
@@ -70,11 +85,17 @@
                         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
                         Trigger Error
                     </button>
+
+                    <button id="btn-reload" class="w-full group relative flex items-center justify-center gap-2 px-4 py-3 bg-gray-700 hover:bg-gray-600 text-white rounded-lg font-medium transition-all duration-200 shadow-lg shadow-gray-900/20 active:scale-[0.98]">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                        Reload Demo
+                    </button>
                 </div>
 
                 <p class="text-sm text-gray-500 mt-2">
                     1. Click <strong>Start</strong> to load the processor.<br>
-                    2. Click <strong>Trigger Error</strong> to force the processor to throw an exception.
+                    2. Click <strong>Trigger Error</strong> to force the processor to throw an exception.<br>
+                    3. Click <strong>Reload Demo</strong> to reset.
                 </p>
             </div>
 
@@ -156,8 +177,11 @@
         // DOM Elements
         const btnStart = document.getElementById('btn-start');
         const btnError = document.getElementById('btn-error');
+        const btnReload = document.getElementById('btn-reload');
         const statusBadge = document.getElementById('status-badge');
         const consoleOutput = document.getElementById('console-output');
+        const chkProp = document.getElementById('chk-prop');
+        const chkListener = document.getElementById('chk-listener');
 
         let audioContext = null;
         let errorNode = null;
@@ -239,11 +263,30 @@
                 // 4. Create Node
                 errorNode = new AudioWorkletNode(audioContext, 'error-processor');
 
-                // 5. ATTACH THE ERROR LISTENER
-                // This is the core requirement of the prompt
-                errorNode.onprocessorerror = (event) => {
-                    handleProcessorError(event);
-                };
+                // 5. ATTACH THE ERROR LISTENER(S) BASED ON TOGGLES
+                let activeListeners = [];
+
+                // Method 1: Using the onprocessorerror property
+                if (chkProp.checked) {
+                    errorNode.onprocessorerror = (event) => {
+                        handleProcessorError(event, 'onprocessorerror property');
+                    };
+                    activeListeners.push('.onprocessorerror');
+                }
+
+                // Method 2: Using addEventListener (As requested)
+                if (chkListener.checked) {
+                    errorNode.addEventListener('processorerror', (event) => {
+                        handleProcessorError(event, 'addEventListener');
+                    });
+                    activeListeners.push('addEventListener');
+                }
+
+                if (activeListeners.length === 0) {
+                    log('Warning: No error listeners attached! Errors will be silent in log.', 'warn');
+                } else {
+                    log(`Attached listeners: ${activeListeners.join(', ')}`, 'info');
+                }
 
                 // Connect to destination (needed for the processor to actually run/render)
                 errorNode.connect(audioContext.destination);
@@ -253,6 +296,13 @@
                 // UI Updates
                 updateStatus('Running', 'active');
                 btnStart.classList.add('hidden');
+                
+                // Lock configuration
+                chkProp.disabled = true;
+                chkListener.disabled = true;
+                chkProp.parentElement.classList.add('opacity-50', 'cursor-not-allowed');
+                chkListener.parentElement.classList.add('opacity-50', 'cursor-not-allowed');
+
                 btnError.disabled = false;
                 btnError.classList.remove('cursor-not-allowed', 'opacity-50', 'bg-red-600/20', 'text-red-400');
                 btnError.classList.add('bg-red-600', 'text-white', 'hover:bg-red-500', 'shadow-lg', 'shadow-red-900/30');
@@ -271,24 +321,25 @@
             errorNode.port.postMessage('throw');
         }
 
-        function handleProcessorError(event) {
+        function handleProcessorError(event, source = 'unknown') {
             // NOTE: The 'event' is an ErrorEvent.
             // However, depending on browser security (cross-origin isolation), 
             // the 'message' property might be generic (e.g., "Script error.").
             // In a secure context with local blobs, we usually get the message.
 
-            console.error("Processor Error Event:", event);
+            console.error(`Processor Error Event (${source}):`, event);
             
             updateStatus('Crashed', 'error');
 
             const errorDetails = [
+                `Source: ${source}`,
                 `Type: ${event.type}`,
                 `Message: "${event.message || 'Unknown error inside worklet'}"`,
                 `Error: "${event.error}"`,
                 `TimeStamp: ${event.timeStamp.toFixed(2)}ms`
             ].join('\n');
 
-            log('PROCESSOR ERROR CAUGHT!', 'error', errorDetails);
+            log(`ERROR CAUGHT via ${source}!`, 'error', errorDetails);
             
             // Disable button since the node is effectively dead/muted after an error
             btnError.disabled = true;
@@ -299,6 +350,7 @@
         // Event Listeners
         btnStart.addEventListener('click', initAudio);
         btnError.addEventListener('click', triggerError);
+        btnReload.addEventListener('click', () => window.location.reload());
 
     </script>
 </body>
