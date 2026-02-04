@@ -137,7 +137,7 @@
                  log('Error: Running via file:// protocol. Service Workers require http/https.', 'error');
                  updateSWStatus(false);
             } else {
-                navigator.serviceWorker.register('./sw.js')
+                navigator.serviceWorker.register('./addmodule-retry-sw.js')
                     .then(reg => {
                         log('Service Worker registered. Scope: ' + reg.scope);
                         updateSWStatus(true);
