@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AudioContext.close() Blocking Test</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @keyframes spin-slow {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+        .animate-spin-slow {
+            animation: spin-slow 2s linear infinite;
+        }
+    </style>
+</head>
+<body class="bg-gray-50 text-gray-900 font-sans min-h-screen p-8">
+
+<div class="max-w-4xl mx-auto bg-white rounded-xl shadow-lg p-6 md:p-8">
+    <div class="mb-6 border-b pb-4">
+        <h1 class="text-3xl font-bold text-gray-800 mb-2">AudioContext.close() / Worklet Hang Test</h1>
+        <p class="text-gray-600">
+            This test checks whether calling <code class="bg-gray-100 px-1 rounded">AudioContext.close()</code> blocks the main thread 
+            if the <code class="bg-gray-100 px-1 rounded">AudioWorkletProcessor</code> is currently stuck in an infinite loop.
+        </p>
+    </div>
+
+    <!-- Main Thread Responsiveness Indicator -->
+    <div class="flex items-center space-x-4 mb-8 bg-blue-50 p-4 rounded-lg border border-blue-100">
+        <div class="w-10 h-10 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+        <div>
+            <h2 class="font-semibold text-blue-900">Main Thread Status: <span class="text-green-600">Responsive</span></h2>
+            <p class="text-sm text-blue-700 font-mono">Animation Frame: <span id="frameCount" class="font-bold">0</span></p>
+        </div>
+    </div>
+
+    <!-- Controls -->
+    <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4 mb-8">
+        <button id="btnInit" class="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 px-4 rounded-lg transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2">
+            1. Init Context
+        </button>
+        <button id="btnHang" disabled class="bg-amber-500 hover:bg-amber-600 disabled:bg-gray-300 disabled:cursor-not-allowed text-white font-semibold py-3 px-4 rounded-lg transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-amber-500 focus:ring-offset-2">
+            2. Trigger Loop
+        </button>
+        <button id="btnStats" disabled class="bg-purple-600 hover:bg-purple-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white font-semibold py-3 px-4 rounded-lg transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2">
+            3. Access Stats
+        </button>
+        <button id="btnOsc" disabled class="bg-teal-600 hover:bg-teal-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white font-semibold py-3 px-4 rounded-lg transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-teal-500 focus:ring-offset-2">
+            4. Create Osc
+        </button>
+        <button id="btnSink" disabled class="bg-pink-600 hover:bg-pink-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white font-semibold py-3 px-4 rounded-lg transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-pink-500 focus:ring-offset-2">
+            5. Set Sink ID
+        </button>
+        <button id="btnTimestamp" disabled class="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white font-semibold py-3 px-4 rounded-lg transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2">
+            6. Get Timestamp
+        </button>
+        <button id="btnDisconnect" disabled class="bg-orange-600 hover:bg-orange-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white font-semibold py-3 px-4 rounded-lg transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-orange-500 focus:ring-offset-2">
+            7. Disconnect
+        </button>
+        <button id="btnSuspend" disabled class="bg-cyan-600 hover:bg-cyan-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white font-semibold py-3 px-4 rounded-lg transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:ring-offset-2">
+            8. Suspend
+        </button>
+        <button id="btnResume" disabled class="bg-lime-600 hover:bg-lime-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white font-semibold py-3 px-4 rounded-lg transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-lime-500 focus:ring-offset-2">
+            9. Resume
+        </button>
+        <button id="btnClose" disabled class="bg-red-600 hover:bg-red-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white font-semibold py-3 px-4 rounded-lg transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2">
+            10. Call close()
+        </button>
+    </div>
+
+    <!-- Logs Container -->
+    <div class="border rounded-lg overflow-hidden flex flex-col h-64 shadow-inner">
+        <div class="bg-gray-800 text-gray-300 px-4 py-2 text-sm font-semibold flex justify-between items-center">
+            <span>Console Logs</span>
+            <button id="btnClearLogs" class="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">Clear</button>
+        </div>
+        <div id="logs" class="bg-gray-900 text-green-400 p-4 flex-1 overflow-auto font-mono text-sm space-y-1"></div>
+    </div>
+</div>
+
+<script>
+    // --- UI and Logging Setup ---
+    const logEl = document.getElementById('logs');
+    function log(msg, type = 'info') {
+        const time = new Date().toISOString().split('T')[1].slice(0, -1);
+        let colorClass = 'text-green-400';
+        if (type === 'error') colorClass = 'text-red-400';
+        if (type === 'warn') colorClass = 'text-yellow-400';
+        
+        const div = document.createElement('div');
+        div.className = colorClass;
+        div.textContent = `[${time}] ${msg}`;
+        logEl.appendChild(div);
+        logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    document.getElementById('btnClearLogs').onclick = () => { logEl.innerHTML = ''; };
+
+    // Main thread responsiveness loop
+    let frame = 0;
+    const frameEl = document.getElementById('frameCount');
+    function animate() {
+        frame++;
+        frameEl.textContent = frame;
+        requestAnimationFrame(animate);
+    }
+    requestAnimationFrame(animate);
+
+    // --- Audio Logic ---
+    let audioCtx = null;
+    let workletNode = null;
+
+    // The Worklet Processor Code (Inline Blob)
+    const workletCode = `
+        class HangingProcessor extends AudioWorkletProcessor {
+            constructor() {
+                super();
+                this.shouldHang = false;
+                this.port.onmessage = (event) => {
+                    if (event.data === 'hang') {
+                        this.shouldHang = true;
+                        this.port.postMessage('hanging_now');
+                    }
+                };
+            }
+            process(inputs, outputs, parameters) {
+                if (this.shouldHang) {
+                    // This blocks the audio thread permanently
+                    while(true) {
+                        // Keep CPU busy
+                        Math.random(); 
+                    }
+                }
+                
+                // Copy input to output so it's a valid passthrough when not hung (optional)
+                const input = inputs[0];
+                const output = outputs[0];
+                if (input && input.length > 0 && output && output.length > 0) {
+                    for (let channel = 0; channel < input.length; ++channel) {
+                        const inputChannel = input[channel];
+                        const outputChannel = output[channel];
+                        for (let i = 0; i < inputChannel.length; ++i) {
+                            outputChannel[i] = inputChannel[i];
+                        }
+                    }
+                }
+                return true;
+            }
+        }
+        registerProcessor('hanging-processor', HangingProcessor);
+    `;
+
+    document.getElementById('btnInit').onclick = async () => {
+        if (audioCtx) {
+            log("AudioContext is already initialized.", 'warn');
+            return;
+        }
+
+        log("Initializing AudioContext...");
+        try {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            log(`AudioContext created. State: ${audioCtx.state}`);
+
+            // Resume context if suspended (browser auto-play policy)
+            if (audioCtx.state === 'suspended') {
+                log("AudioContext is suspended. Resuming...");
+                await audioCtx.resume();
+                log(`AudioContext resumed. State: ${audioCtx.state}`);
+            }
+
+            log("Creating inline AudioWorklet script blob...");
+            const blob = new Blob([workletCode], { type: 'application/javascript' });
+            const url = URL.createObjectURL(blob);
+
+            log("Adding AudioWorklet module...");
+            await audioCtx.audioWorklet.addModule(url);
+            log("Module loaded successfully.");
+
+            workletNode = new AudioWorkletNode(audioCtx, 'hanging-processor');
+            
+            // Listen for messages back from the worklet
+            workletNode.port.onmessage = (e) => {
+                if (e.data === 'hanging_now') {
+                    log("Received confirmation from worklet: entering infinite loop NOW.", 'warn');
+                }
+            };
+
+            // Connect to destination to ensure the processing graph runs
+            workletNode.connect(audioCtx.destination);
+            log("AudioWorkletNode created and connected to destination.");
+
+            // Enable next buttons
+            document.getElementById('btnInit').disabled = true;
+            document.getElementById('btnHang').disabled = false;
+            document.getElementById('btnStats').disabled = false;
+            document.getElementById('btnOsc').disabled = false;
+            document.getElementById('btnSink').disabled = false;
+            document.getElementById('btnTimestamp').disabled = false;
+            document.getElementById('btnDisconnect').disabled = false;
+            document.getElementById('btnSuspend').disabled = false;
+            document.getElementById('btnResume').disabled = false;
+            document.getElementById('btnClose').disabled = false;
+
+        } catch (e) {
+            log(`Initialization Error: ${e.message}`, 'error');
+        }
+    };
+
+    document.getElementById('btnHang').onclick = () => {
+        if (!workletNode) return;
+        log("Sending 'hang' message to worklet. The Audio Thread should lock up immediately.", 'warn');
+        workletNode.port.postMessage('hang');
+        
+        // Disable the hang button so we don't spam it
+        document.getElementById('btnHang').disabled = true;
+    };
+
+    document.getElementById('btnStats').onclick = () => {
+        if (!audioCtx) return;
+        
+        log("-------------------------------------------------", 'warn');
+        log("Accessing audioCtx stats. Watch the main thread animation!", 'warn');
+        
+        const startTime = performance.now();
+        
+        try {
+            // Access properties that might block waiting for the audio thread
+            const stats = audioCtx.playbackStats;
+            const currentTime = audioCtx.currentTime;
+            const state = audioCtx.state;
+            const baseLatency = audioCtx.baseLatency;
+            
+            const syncTime = performance.now() - startTime;
+            
+            log(`Accessed stats synchronously in ${syncTime.toFixed(2)}ms.`);
+            log(`currentTime: ${currentTime}, state: ${state}, baseLatency: ${baseLatency}`);
+            log(`playbackStats: ${stats ? JSON.stringify(stats) : 'undefined'}`);
+
+        } catch (err) {
+            const syncTime = performance.now() - startTime;
+            log(`SYNCHRONOUS THROW: Stats access failed in ${syncTime.toFixed(2)}ms: ${err}`, 'error');
+        }
+    };
+
+    document.getElementById('btnOsc').onclick = () => {
+        if (!audioCtx) return;
+        
+        log("-------------------------------------------------", 'warn');
+        log("Creating OscillatorNode. Watch the main thread animation!", 'warn');
+        
+        const startTime = performance.now();
+        
+        try {
+            // Test if creating, connecting, and starting a native node blocks waiting for the audio thread
+            const osc = audioCtx.createOscillator();
+            osc.frequency.value = 440;
+            osc.connect(audioCtx.destination);
+            osc.start();
+            
+            const syncTime = performance.now() - startTime;
+            log(`Created and started OscillatorNode synchronously in ${syncTime.toFixed(2)}ms.`);
+
+            // Silently clean up after 1 second to avoid endless noise if the thread isn't hung
+            setTimeout(() => {
+                try { 
+                    osc.stop(); 
+                    osc.disconnect(); 
+                } catch(e) {}
+            }, 1000);
+
+        } catch (err) {
+            const syncTime = performance.now() - startTime;
+            log(`SYNCHRONOUS THROW: Oscillator creation failed in ${syncTime.toFixed(2)}ms: ${err}`, 'error');
+        }
+    };
+
+    document.getElementById('btnSink').onclick = () => {
+        if (!audioCtx) return;
+        
+        log("-------------------------------------------------", 'warn');
+        log("Calling audioCtx.setSinkId(''). Watch the main thread animation!", 'warn');
+        
+        const startTime = performance.now();
+        
+        try {
+            // Some browsers/environments might not support setSinkId yet
+            if (typeof audioCtx.setSinkId !== 'function') {
+                log("setSinkId() is not supported in this browser.", 'warn');
+                return;
+            }
+
+            // Test if setSinkId() executes synchronously and returns a Promise immediately
+            const sinkPromise = audioCtx.setSinkId('');
+            const syncTime = performance.now() - startTime;
+            
+            log(`audioCtx.setSinkId('') returned a Promise synchronously in ${syncTime.toFixed(2)}ms.`);
+            log("Waiting for setSinkId() Promise to resolve...");
+
+            sinkPromise.then(() => {
+                const totalTime = performance.now() - startTime;
+                log(`SUCCESS: audioCtx.setSinkId('') Promise resolved in ${totalTime.toFixed(2)}ms.`);
+            }).catch((err) => {
+                const totalTime = performance.now() - startTime;
+                log(`ERROR: audioCtx.setSinkId('') Promise rejected in ${totalTime.toFixed(2)}ms: ${err}`, 'error');
+            });
+
+        } catch (err) {
+            const syncTime = performance.now() - startTime;
+            log(`SYNCHRONOUS THROW: audioCtx.setSinkId('') failed in ${syncTime.toFixed(2)}ms: ${err}`, 'error');
+        }
+    };
+
+    document.getElementById('btnTimestamp').onclick = () => {
+        if (!audioCtx) return;
+        
+        log("-------------------------------------------------", 'warn');
+        log("Calling getOutputTimestamp(). Watch the main thread animation!", 'warn');
+        
+        const startTime = performance.now();
+        try {
+            const ts = audioCtx.getOutputTimestamp();
+            const syncTime = performance.now() - startTime;
+            log(`getOutputTimestamp() returned synchronously in ${syncTime.toFixed(2)}ms. contextTime: ${ts.contextTime}`);
+        } catch (err) {
+            const syncTime = performance.now() - startTime;
+            log(`SYNCHRONOUS THROW: getOutputTimestamp() failed in ${syncTime.toFixed(2)}ms: ${err}`, 'error');
+        }
+    };
+
+    document.getElementById('btnDisconnect').onclick = () => {
+        if (!workletNode) return;
+        
+        log("-------------------------------------------------", 'warn');
+        log("Calling workletNode.disconnect(). Watch the main thread animation!", 'warn');
+        
+        const startTime = performance.now();
+        try {
+            workletNode.disconnect();
+            const syncTime = performance.now() - startTime;
+            log(`workletNode.disconnect() returned synchronously in ${syncTime.toFixed(2)}ms.`);
+        } catch (err) {
+            const syncTime = performance.now() - startTime;
+            log(`SYNCHRONOUS THROW: disconnect() failed in ${syncTime.toFixed(2)}ms: ${err}`, 'error');
+        }
+    };
+
+    document.getElementById('btnSuspend').onclick = () => {
+        if (!audioCtx) return;
+        
+        log("-------------------------------------------------", 'warn');
+        log("Calling audioCtx.suspend(). Watch the main thread animation!", 'warn');
+        
+        const startTime = performance.now();
+        try {
+            const suspendPromise = audioCtx.suspend();
+            const syncTime = performance.now() - startTime;
+            log(`suspend() returned a Promise synchronously in ${syncTime.toFixed(2)}ms.`);
+            
+            suspendPromise.then(() => {
+                log(`SUCCESS: suspend() Promise resolved in ${(performance.now() - startTime).toFixed(2)}ms.`);
+            }).catch(err => {
+                log(`ERROR: suspend() Promise rejected in ${(performance.now() - startTime).toFixed(2)}ms: ${err}`, 'error');
+            });
+        } catch (err) {
+            const syncTime = performance.now() - startTime;
+            log(`SYNCHRONOUS THROW: suspend() failed in ${syncTime.toFixed(2)}ms: ${err}`, 'error');
+        }
+    };
+
+    document.getElementById('btnResume').onclick = () => {
+        if (!audioCtx) return;
+        
+        log("-------------------------------------------------", 'warn');
+        log("Calling audioCtx.resume(). Watch the main thread animation!", 'warn');
+        
+        const startTime = performance.now();
+        try {
+            const resumePromise = audioCtx.resume();
+            const syncTime = performance.now() - startTime;
+            log(`resume() returned a Promise synchronously in ${syncTime.toFixed(2)}ms.`);
+            
+            resumePromise.then(() => {
+                log(`SUCCESS: resume() Promise resolved in ${(performance.now() - startTime).toFixed(2)}ms.`);
+            }).catch(err => {
+                log(`ERROR: resume() Promise rejected in ${(performance.now() - startTime).toFixed(2)}ms: ${err}`, 'error');
+            });
+        } catch (err) {
+            const syncTime = performance.now() - startTime;
+            log(`SYNCHRONOUS THROW: resume() failed in ${syncTime.toFixed(2)}ms: ${err}`, 'error');
+        }
+    };
+
+    document.getElementById('btnClose').onclick = () => {
+        if (!audioCtx) return;
+        
+        log("-------------------------------------------------", 'warn');
+        log("Calling audioCtx.close(). Watch the main thread animation!", 'warn');
+        
+        const startTime = performance.now();
+        
+        try {
+            // Test if close() executes synchronously and returns immediately
+            const closePromise = audioCtx.close();
+            const syncTime = performance.now() - startTime;
+            
+            log(`audioCtx.close() returned a Promise synchronously in ${syncTime.toFixed(2)}ms.`);
+            log("Waiting for close() Promise to resolve...");
+
+            closePromise.then(() => {
+                const totalTime = performance.now() - startTime;
+                log(`SUCCESS: audioCtx.close() Promise resolved in ${totalTime.toFixed(2)}ms.`);
+            }).catch((err) => {
+                const totalTime = performance.now() - startTime;
+                log(`ERROR: audioCtx.close() Promise rejected in ${totalTime.toFixed(2)}ms: ${err}`, 'error');
+            });
+
+        } catch (err) {
+            // Some very old browsers might throw a synchronous error
+            const syncTime = performance.now() - startTime;
+            log(`SYNCHRONOUS THROW: audioCtx.close() failed in ${syncTime.toFixed(2)}ms: ${err}`, 'error');
+        }
+        
+        document.getElementById('btnClose').disabled = true;
+    };
+</script>
+</body>
+</html>

@@ -9,3 +9,4 @@ Vibe coded with Gemnini. Just for testing.
 * [Audio Context Alloc and release](https://lindell.me/audio-context-demos/alloc-and-release.html)
 * [Worker Alloc and release](https://lindell.me/audio-context-demos/worker-alloc-and-release.html)
 * [processorerror](https://lindell.me/audio-context-demos/processorerror.html)
+* [close with loop](https://lindell.me/audio-context-demos/close-with-loop.html)
