@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Audio Worklet Float Test</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Custom scrollbar for the log output to look clean */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #1f2937; 
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #4b5563; 
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #6b7280; 
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen flex flex-col items-center py-10 px-4 font-sans antialiased">
+
+    <div class="max-w-3xl w-full bg-gray-800 rounded-xl shadow-2xl overflow-hidden border border-gray-700">
+        <div class="p-6 border-b border-gray-700">
+            <h1 class="text-2xl font-bold text-white mb-2">Audio Worklet Float Evaluation Test</h1>
+            <p class="text-gray-400 text-sm mb-4">
+                This test instantiates an <code class="bg-gray-900 px-1 py-0.5 rounded text-blue-400">AudioWorkletProcessor</code> 
+                and runs a loop <span class="font-bold text-white">1,000,000 times</span> during its processing callback. 
+                It tests the expression <code class="bg-gray-900 px-1 py-0.5 rounded text-green-400">(Number.MIN_VALUE * 2.0) === 0.0</code> 
+                to see if the audio thread applies Flush-To-Zero (FTZ) optimizations.
+            </p>
+            <div class="flex items-center justify-between">
+                <button id="start-btn" class="bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2 px-6 rounded-lg transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-opacity-75">
+                    Start Test
+                </button>
+                <div class="text-sm font-mono bg-gray-900 px-4 py-2 rounded border border-gray-700">
+                    Status: <span id="status-text" class="text-yellow-400">Waiting for user</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="p-6 bg-gray-800">
+            <div class="flex justify-between items-end mb-2">
+                <h2 class="text-lg font-semibold text-white">Execution Log</h2>
+                <span id="progress-text" class="text-xs text-gray-500 font-mono">0 / 1,000,000</span>
+            </div>
+            <div class="w-full bg-gray-900 rounded-full h-2.5 mb-4 border border-gray-700">
+                <div id="progress-bar" class="bg-blue-600 h-2.5 rounded-full transition-all duration-75" style="width: 0%"></div>
+            </div>
+            <div id="log-container" class="bg-gray-900 border border-gray-700 rounded-lg h-96 overflow-y-auto p-4 font-mono text-sm shadow-inner">
+                <div class="text-gray-500 italic">Logs will appear here once the test starts...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // The AudioWorklet code as a string so we can load it from a Blob.
+        // This ensures the application remains a single runnable file.
+        const workletCode = `
+            class FloatTestProcessor extends AudioWorkletProcessor {
+                constructor() {
+                    super();
+                    this.hasRun = false;
+                }
+
+                // The process method is the actual audio thread callback
+                process(inputs, outputs, parameters) {
+                    if (!this.hasRun) {
+                        this.hasRun = true;
+                        
+                        let dummyValue = 0;
+                        const TOTAL_ITERATIONS = 1000000;
+                        const REPORT_INTERVAL = 1000;
+
+                        // Execute the loop 1,000,000 times
+                        for (let i = 1; i <= TOTAL_ITERATIONS; i++) {
+                            // The target expression to test subnormal behavior in the DSP thread
+                            let result = (Number.MIN_VALUE * 2.0) === 0.0;
+                            
+                            // Add to dummy value to strictly prevent dead-code elimination (JIT optimization)
+                            // result evaluates to 1 if true, 0 if false
+                            dummyValue += result;
+
+                            // Send progress back to the main thread every 1000 iterations
+                            if (i % REPORT_INTERVAL === 0) {
+                                this.port.postMessage({
+                                    type: 'progress',
+                                    iteration: i,
+                                    result: result,
+                                    dummy: dummyValue
+                                });
+                            }
+                        }
+
+                        // Send final completion message
+                        this.port.postMessage({
+                            type: 'complete',
+                            finalDummy: dummyValue
+                        });
+                    }
+                    
+                    // Return false to let the processor be garbage collected since we only need it once
+                    return false; 
+                }
+            }
+
+            registerProcessor('float-test-processor', FloatTestProcessor);
+        `;
+
+        const startBtn = document.getElementById('start-btn');
+        const statusText = document.getElementById('status-text');
+        const logContainer = document.getElementById('log-container');
+        const progressBar = document.getElementById('progress-bar');
+        const progressText = document.getElementById('progress-text');
+        
+        let audioContext = null;
+        let testNode = null;
+
+        // Helper function to append log messages safely and efficiently
+        function appendLog(message, isHighlight = false) {
+            const div = document.createElement('div');
+            div.textContent = message;
+            if (isHighlight) {
+                div.className = "text-green-400 font-bold mb-2";
+            } else {
+                div.className = "text-gray-300 border-b border-gray-800 pb-1 mb-1";
+            }
+            logContainer.appendChild(div);
+            // Auto-scroll to bottom
+            logContainer.scrollTop = logContainer.scrollHeight;
+        }
+
+        async function runTest() {
+            try {
+                // Reset UI
+                startBtn.disabled = true;
+                startBtn.classList.add('opacity-50', 'cursor-not-allowed');
+                logContainer.innerHTML = '';
+                progressBar.style.width = '0%';
+                progressText.textContent = '0 / 1,000,000';
+                statusText.textContent = 'Initializing AudioContext...';
+                statusText.className = 'text-blue-400';
+
+                // Initialize AudioContext (Requires user interaction, hence inside the button click)
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                
+                statusText.textContent = 'Loading Worklet...';
+
+                // Create a Blob URL for the worklet code
+                const blob = new Blob([workletCode], { type: 'application/javascript' });
+                const blobUrl = URL.createObjectURL(blob);
+
+                // Add the module to the AudioWorklet
+                await audioContext.audioWorklet.addModule(blobUrl);
+
+                statusText.textContent = 'Running Test...';
+                appendLog('▶ AudioWorklet module loaded. Instantiating Node...', true);
+
+                // Instantiate the processor. This immediately queues the process() method on the audio thread.
+                testNode = new AudioWorkletNode(audioContext, 'float-test-processor');
+                
+                // Keep track of the batch DOM updates to prevent freezing the UI thread
+                let logBuffer = [];
+                let lastDrawTime = performance.now();
+
+                // Listen to messages from the AudioWorklet
+                testNode.port.onmessage = (event) => {
+                    const data = event.data;
+
+                    if (data.type === 'progress') {
+                        const msg = `[Iteration ${data.iteration.toLocaleString().padStart(9)}] Result: ${data.result} | Dummy: ${data.dummy}`;
+                        
+                        logBuffer.push(msg);
+
+                        // Batch UI updates every 16ms (~60fps) to prevent the browser from hanging
+                        // 1000 messages come very quickly from the audio thread!
+                        const now = performance.now();
+                        if (now - lastDrawTime > 16) {
+                            // Update text logs
+                            logBuffer.forEach(m => {
+                                const div = document.createElement('div');
+                                div.textContent = m;
+                                div.className = "text-gray-300";
+                                logContainer.appendChild(div);
+                            });
+                            logBuffer = [];
+                            logContainer.scrollTop = logContainer.scrollHeight;
+
+                            // Update Progress Bar
+                            const pct = (data.iteration / 1000000) * 100;
+                            progressBar.style.width = `${pct}%`;
+                            progressText.textContent = `${data.iteration.toLocaleString()} / 1,000,000`;
+                            
+                            lastDrawTime = now;
+                        }
+
+                    } else if (data.type === 'complete') {
+                        // Flush remaining logs
+                        logBuffer.forEach(m => {
+                            const div = document.createElement('div');
+                            div.textContent = m;
+                            div.className = "text-gray-300";
+                            logContainer.appendChild(div);
+                        });
+                        
+                        progressBar.style.width = `100%`;
+                        progressText.textContent = `1,000,000 / 1,000,000`;
+                        
+                        appendLog(`✔ Test Completed. Final Dummy Value: ${data.finalDummy}`, true);
+                        statusText.textContent = 'Test Finished';
+                        statusText.className = 'text-green-400';
+                        
+                        // Cleanup
+                        testNode.disconnect();
+                        startBtn.disabled = false;
+                        startBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+                    }
+                };
+
+            } catch (error) {
+                console.error(error);
+                appendLog(`❌ Error: ${error.message}`, true);
+                statusText.textContent = 'Error occurred';
+                statusText.className = 'text-red-500';
+                startBtn.disabled = false;
+                startBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+            }
+        }
+
+        startBtn.addEventListener('click', () => {
+            if (audioContext && audioContext.state !== 'closed') {
+                audioContext.close().then(() => runTest());
+            } else {
+                runTest();
+            }
+        });
+    </script>
+</body>
+</html>
