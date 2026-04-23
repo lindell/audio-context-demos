@@ -92,15 +92,17 @@
                                     type: 'progress',
                                     iteration: i,
                                     result: result,
-                                    dummy: dummyValue
                                 });
+                            }
+
+                            if (dummyValue < 0) {
+                                console.log('this should never be hit');
                             }
                         }
 
                         // Send final completion message
                         this.port.postMessage({
                             type: 'complete',
-                            finalDummy: dummyValue
                         });
                     }
                     
@@ -173,7 +175,7 @@
                     const data = event.data;
 
                     if (data.type === 'progress') {
-                        const msg = `[Iteration ${data.iteration.toLocaleString().padStart(9)}] Result: ${data.result} | Dummy: ${data.dummy}`;
+                        const msg = `[Iteration ${data.iteration.toLocaleString().padStart(9)}] Result: ${data.result}`;
                         
                         logBuffer.push(msg);
 
@@ -211,7 +213,7 @@
                         progressBar.style.width = `100%`;
                         progressText.textContent = `1,000,000 / 1,000,000`;
                         
-                        appendLog(`✔ Test Completed. Final Dummy Value: ${data.finalDummy}`, true);
+                        appendLog(`✔ Test Completed.`, true);
                         statusText.textContent = 'Test Finished';
                         statusText.className = 'text-green-400';
                         
