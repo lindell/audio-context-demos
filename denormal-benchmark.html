@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Denormal Float Performance Benchmark</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .progress-bar-transition { transition: width 1s cubic-bezier(0.4, 0, 0.2, 1); }
+        
+        /* Loading spinner animation */
+        .loader {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #6366f1;
+            border-radius: 50%;
+            width: 20px;
+            height: 20px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body class="bg-gray-50 text-gray-800 min-h-screen p-4 md:p-8">
+
+    <div class="max-w-4xl mx-auto space-y-6">
+        
+        <header class="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 md:p-8 text-center">
+            <h1 class="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-indigo-600 to-purple-600 mb-2">
+                Denormal Float Performance Benchmark
+            </h1>
+            <p class="text-gray-500 max-w-2xl mx-auto">
+                Test how your CPU handles extremely small floating-point numbers. On many architectures (like traditional x86), 
+                calculations on subnormal numbers are delegated to microcode, resulting in significant performance penalties.
+            </p>
+        </header>
+
+        <div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-6">
+            <div class="flex flex-col md:flex-row items-center justify-between gap-4">
+                <div class="flex-1 w-full">
+                    <label for="iterations" class="block text-sm font-semibold text-gray-700 mb-1">
+                        Mathematical Operations (Iterations)
+                    </label>
+                    <input type="number" id="iterations" value="1000000000" min="10000000" step="10000000" 
+                           class="w-full bg-gray-50 border border-gray-300 text-gray-900 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 block p-2.5">
+                    <p class="text-xs text-gray-400 mt-1">Default is 1 billion. Increase for higher precision if test finishes too quickly.</p>
+                </div>
+                <div class="w-full md:w-auto flex items-end">
+                    <button id="runBtn" class="w-full md:w-auto h-[42px] px-8 bg-indigo-600 hover:bg-indigo-700 transition-colors text-white font-semibold rounded-lg shadow-md flex items-center justify-center gap-2">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="currentColor" viewBox="0 0 256 256"><path d="M240,56v48a8,8,0,0,1-16,0V67.31L197.66,93.66a8,8,0,0,1-11.32-11.32L212.69,56H176a8,8,0,0,1,0-16h48A16,16,0,0,1,240,56ZM192,152a8,8,0,0,0-8,8v56H72V72h56a8,8,0,0,0,0-16H72A16,16,0,0,0,56,72V216a16,16,0,0,0,16,16H192a16,16,0,0,0,16-16V160A8,8,0,0,0,192,152Z"></path></svg>
+                        Run Benchmark
+                    </button>
+                </div>
+            </div>
+            
+            <div id="statusAlert" class="mt-4 hidden items-center p-4 mb-4 text-sm text-indigo-800 rounded-lg bg-indigo-50" role="alert">
+                <div class="loader mr-3"></div>
+                <span id="statusText" class="font-medium">Initializing...</span>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <!-- Normal Result Card -->
+            <div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 relative overflow-hidden">
+                <div class="absolute top-0 right-0 w-32 h-32 bg-green-50 rounded-bl-full -z-10"></div>
+                <h2 class="text-lg font-semibold text-gray-800 mb-1 flex items-center gap-2">
+                    <div class="w-3 h-3 rounded-full bg-green-500"></div>
+                    Normal Number
+                </h2>
+                <div class="text-xs text-gray-500 mb-4 font-mono bg-gray-50 p-2 rounded border border-gray-100">
+                    Test Value: <span id="normalValPreview">1.0</span>
+                </div>
+                
+                <div class="flex items-baseline gap-2">
+                    <span id="normalTime" class="text-4xl font-bold text-gray-900">---</span>
+                    <span class="text-gray-500 font-medium">ms</span>
+                </div>
+            </div>
+
+            <!-- Denormal Result Card -->
+            <div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 relative overflow-hidden">
+                <div class="absolute top-0 right-0 w-32 h-32 bg-red-50 rounded-bl-full -z-10"></div>
+                <h2 class="text-lg font-semibold text-gray-800 mb-1 flex items-center gap-2">
+                    <div class="w-3 h-3 rounded-full bg-red-500"></div>
+                    Denormal Number
+                </h2>
+                <div class="text-xs text-gray-500 mb-4 font-mono bg-gray-50 p-2 rounded border border-gray-100">
+                    Test Value: <span id="denormalValPreview">1e-314</span>
+                </div>
+
+                <div class="flex items-baseline gap-2">
+                    <span id="denormalTime" class="text-4xl font-bold text-gray-900">---</span>
+                    <span class="text-gray-500 font-medium">ms</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-6">
+            <h3 class="text-lg font-semibold text-gray-800 mb-4">Relative Performance</h3>
+            
+            <div class="space-y-4">
+                <div>
+                    <div class="flex justify-between text-sm mb-1">
+                        <span class="font-medium text-gray-700">Normal Float</span>
+                        <span id="normalBarLabel" class="text-gray-500">Waiting</span>
+                    </div>
+                    <div class="w-full bg-gray-100 rounded-full h-4 overflow-hidden">
+                        <div id="normalBar" class="bg-green-500 h-4 rounded-full progress-bar-transition" style="width: 0%"></div>
+                    </div>
+                </div>
+                
+                <div>
+                    <div class="flex justify-between text-sm mb-1">
+                        <span class="font-medium text-gray-700">Denormal Float</span>
+                        <span id="denormalBarLabel" class="text-gray-500">Waiting</span>
+                    </div>
+                    <div class="w-full bg-gray-100 rounded-full h-4 overflow-hidden">
+                        <div id="denormalBar" class="bg-red-500 h-4 rounded-full progress-bar-transition" style="width: 0%"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="conclusionBox" class="mt-6 p-4 bg-gray-50 rounded-xl border border-gray-200 hidden">
+                <p id="conclusionText" class="text-center font-medium text-gray-800"></p>
+                <p id="hardwareNote" class="text-center text-sm text-gray-500 mt-2">
+                    * If the times are very similar, your CPU likely handles denormals efficiently in hardware (e.g., Apple Silicon / ARM), or the JS engine has Flushed-To-Zero (FTZ).
+                </p>
+            </div>
+        </div>
+        
+        <!-- Hidden div to store result outputs to prevent V8 dead-code elimination -->
+        <div id="dev-null" class="hidden"></div>
+    </div>
+
+    <script>
+        /**
+         * The core benchmark function.
+         * We pass the starting value and iterations.
+         * The loop multiplies and divides repeatedly to ensure the FPU does work
+         * without drastically changing the magnitude of the number.
+         */
+        function runMathLoop(startValue, totalOps) {
+            let v = startValue;
+            
+            // Constants that won't cancel perfectly to prevent compiler optimization
+            const c1 = 1.0000001;
+            const c2 = 0.9999999;
+            
+            // Divide by 4 because we do 4 operations per loop iteration
+            const loopIters = Math.floor(totalOps / 4);
+            
+            const t0 = performance.now();
+            
+            for (let i = 0; i < loopIters; i++) {
+                v *= c1;
+                v /= c1;
+                v *= c2;
+                v /= c2;
+            }
+            
+            const t1 = performance.now();
+            
+            return {
+                duration: t1 - t0,
+                finalVal: v
+            };
+        }
+
+        // Helper to briefly yield to the browser's UI thread
+        const yieldUI = () => new Promise(resolve => setTimeout(resolve, 50));
+
+        const runBtn = document.getElementById('runBtn');
+        const statusAlert = document.getElementById('statusAlert');
+        const statusText = document.getElementById('statusText');
+        const iterationsInput = document.getElementById('iterations');
+        
+        const normalTimeEl = document.getElementById('normalTime');
+        const denormalTimeEl = document.getElementById('denormalTime');
+        const normalBar = document.getElementById('normalBar');
+        const denormalBar = document.getElementById('denormalBar');
+        const normalBarLabel = document.getElementById('normalBarLabel');
+        const denormalBarLabel = document.getElementById('denormalBarLabel');
+        
+        const conclusionBox = document.getElementById('conclusionBox');
+        const conclusionText = document.getElementById('conclusionText');
+        const devNull = document.getElementById('dev-null');
+
+        runBtn.addEventListener('click', async () => {
+            // 1. Setup UI for testing
+            const iters = parseInt(iterationsInput.value, 10);
+            if (isNaN(iters) || iters <= 0) {
+                alert("Please enter a valid number of iterations.");
+                return;
+            }
+
+            // Disable button & Reset UI
+            runBtn.disabled = true;
+            runBtn.classList.add('opacity-50', 'cursor-not-allowed');
+            statusAlert.classList.remove('hidden');
+            statusAlert.classList.add('flex');
+            
+            normalTimeEl.innerText = "---";
+            denormalTimeEl.innerText = "---";
+            normalBar.style.width = "0%";
+            denormalBar.style.width = "0%";
+            normalBarLabel.innerText = "Waiting";
+            denormalBarLabel.innerText = "Waiting";
+            conclusionBox.classList.add('hidden');
+
+            // 2. Run Normal Benchmark
+            statusText.innerText = `Benchmarking normal float (1.0) with ${iters.toLocaleString()} ops...`;
+            await yieldUI(); // Force UI to paint
+            
+            // We use 1.0 as the normal float
+            const normalRes = runMathLoop(1.0, iters);
+            const normalTime = normalRes.duration;
+            normalTimeEl.innerText = normalTime.toFixed(2);
+            normalBarLabel.innerText = "Done";
+
+            // 3. Run Denormal Benchmark
+            statusText.innerText = `Benchmarking denormal float (1e-314) with ${iters.toLocaleString()} ops...`;
+            await yieldUI(); // Force UI to paint
+            
+            // We use 1e-314, which falls strictly into the subnormal range (between 5e-324 and 2.22e-308)
+            const denormalRes = runMathLoop(1e-314, iters);
+            const denormalTime = denormalRes.duration;
+            denormalTimeEl.innerText = denormalTime.toFixed(2);
+            denormalBarLabel.innerText = "Done";
+
+            // Anti dead-code elimination dump
+            devNull.innerText = `Normal Final: ${normalRes.finalVal}, Denormal Final: ${denormalRes.finalVal}`;
+
+            // 4. Calculate and Update Visualization
+            statusText.innerText = "Calculating results...";
+            await yieldUI();
+
+            const maxTime = Math.max(normalTime, denormalTime);
+            
+            // Safeguard against 0ms division
+            const safeMax = maxTime === 0 ? 1 : maxTime; 
+            
+            const normalPct = (normalTime / safeMax) * 100;
+            const denormalPct = (denormalTime / safeMax) * 100;
+
+            normalBar.style.width = `${Math.max(normalPct, 1)}%`; // Ensure min width of 1% for visibility
+            denormalBar.style.width = `${Math.max(denormalPct, 1)}%`;
+
+            // Display conclusion
+            let conclusion = "";
+            let checkZeroFlag = false;
+
+            // Did the JS engine immediately flush subnormals to zero?
+            if (denormalRes.finalVal === 0) {
+                 conclusion = "Your environment immediately flushed the subnormal number to zero (FTZ enabled). No denormal penalty can be observed.";
+                 checkZeroFlag = true;
+            } else if (denormalTime > normalTime * 1.5) {
+                const ratio = (denormalTime / normalTime).toFixed(1);
+                conclusion = `Denormal operations were <span class="font-bold text-red-600">${ratio}x slower</span> than normal operations!`;
+            } else if (normalTime > denormalTime * 1.5) {
+                 conclusion = `Unexpected result: Normal operations were slower.`;
+            } else {
+                conclusion = `Denormal and normal operations performed identically. Your hardware does not penalize denormal arithmetic.`;
+            }
+
+            conclusionText.innerHTML = conclusion;
+            conclusionBox.classList.remove('hidden');
+
+            // 5. Cleanup
+            statusAlert.classList.remove('flex');
+            statusAlert.classList.add('hidden');
+            runBtn.disabled = false;
+            runBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+        });
+    </script>
+</body>
+</html>
