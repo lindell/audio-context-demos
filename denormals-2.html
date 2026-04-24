@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Audio Worklet Float Test</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Custom scrollbar for the log output to look clean */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #1f2937; 
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #4b5563; 
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #6b7280; 
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen flex flex-col items-center py-10 px-4 font-sans antialiased">
+
+    <div class="max-w-3xl w-full bg-gray-800 rounded-xl shadow-2xl overflow-hidden border border-gray-700">
+        <div class="p-6 border-b border-gray-700">
+            <h1 class="text-2xl font-bold text-white mb-2">Advanced JIT/Turbofan Float Test</h1>
+            <p class="text-gray-400 text-sm mb-4">
+                This test detects whether the FPU state for "Denormals Are Zero" (DAZ) or "Flush To Zero" (FTZ) unexpectedly changes during JIT compilation (crbug.com/382005099). It iteratively multiplies a random value between 0.01 and 0.1 by 0.5 until it hits exactly <code class="bg-gray-900 px-1 py-0.5 rounded text-green-400">0.0</code>. By inspecting the <i>last non-zero value</i>, it determines if denormals are actively used or flushed to zero. We run this <span class="font-bold text-white">10,000,000 times</span> in either an <b>AudioWorklet</b> or a <b>Web Worker</b> to catch if Turbofan suddenly swaps in a compiled function with a different FPU state.
+            </p>
+            <div class="flex items-center justify-between">
+                <div class="flex gap-3">
+                    <button id="start-worklet-btn" class="bg-blue-600 hover:bg-blue-500 text-white font-semibold py-2 px-4 rounded-lg transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-opacity-75">
+                        Run AudioWorklet
+                    </button>
+                    <button id="start-worker-btn" class="bg-purple-600 hover:bg-purple-500 text-white font-semibold py-2 px-4 rounded-lg transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-purple-400 focus:ring-opacity-75">
+                        Run Web Worker
+                    </button>
+                </div>
+                <div class="text-sm font-mono bg-gray-900 px-4 py-2 rounded border border-gray-700">
+                    Status: <span id="status-text" class="text-yellow-400">Waiting for user</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="p-6 bg-gray-800">
+            <div class="flex justify-between items-end mb-2">
+                <h2 class="text-lg font-semibold text-white">Execution Log</h2>
+                <span id="progress-text" class="text-xs text-gray-500 font-mono">0 / 10,000,000</span>
+            </div>
+            <div class="w-full bg-gray-900 rounded-full h-2.5 mb-4 border border-gray-700">
+                <div id="progress-bar" class="bg-blue-600 h-2.5 rounded-full transition-all duration-75" style="width: 0%"></div>
+            </div>
+            <div id="log-container" class="bg-gray-900 border border-gray-700 rounded-lg h-96 overflow-y-auto p-4 font-mono text-sm shadow-inner">
+                <div class="text-gray-500 italic">Logs will appear here once the test starts...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Extracting the test logic so the exact same code can run in both Worklet and Worker contexts.
+        const sharedCore = `
+            class FloatTester {
+                constructor(postMessageFunc) {
+                    this.iterationCount = 0;
+                    this.MAX_ITERATIONS = 10000000;
+                    this.lastDenormalState = null;
+                    this.dummyValue = 0;
+                    this.done = false;
+                    this.postMessage = postMessageFunc;
+                }
+
+                // Generates a value, shrinks it to 0, and returns the last non-zero value.
+                hotFunction() {
+                    let val = 0.01 + (Math.random() * 0.09);
+                    let lastVal = val;
+                    
+                    // Multiply by 0.5 until it underflows to exactly 0.0
+                    while (val !== 0.0) {
+                        lastVal = val;
+                        val *= 0.5;
+                    }
+                    
+                    // Number.MIN_NORMAL is approx 2.225e-308. 
+                    // If lastVal is smaller than this threshold, denormals are supported.
+                    let denormalsUsed = lastVal < 2.22e-308;
+                    
+                    return { lastVal, denormalsUsed };
+                }
+
+                runChunk() {
+                    if (this.done) return false;
+
+                    const CHUNK_SIZE = 10000; 
+
+                    for (let i = 0; i < CHUNK_SIZE; i++) {
+                        this.iterationCount++;
+                        
+                        let result = this.hotFunction();
+                        this.dummyValue += result.denormalsUsed ? 1 : 0;
+
+                        if (this.lastDenormalState !== null && result.denormalsUsed !== this.lastDenormalState) {
+                            this.postMessage({
+                                type: 'state-change',
+                                iteration: this.iterationCount,
+                                oldResult: this.lastDenormalState,
+                                newResult: result.denormalsUsed,
+                                lastVal: result.lastVal
+                            });
+                        }
+                        this.lastDenormalState = result.denormalsUsed;
+
+                        if (this.iterationCount % 10000 === 0) {
+                            this.postMessage({
+                                type: 'progress',
+                                iteration: this.iterationCount,
+                                result: result.denormalsUsed,
+                                lastVal: result.lastVal
+                            });
+                        }
+
+                        if (this.iterationCount >= this.MAX_ITERATIONS) {
+                            this.postMessage({
+                                type: 'complete',
+                                dummy: this.dummyValue
+                            });
+                            this.done = true;
+                            return false;
+                        }
+                    }
+                    return true; 
+                }
+            }
+        `;
+
+        const workletCode = sharedCore + `
+            class AdvancedFloatTestProcessor extends AudioWorkletProcessor {
+                constructor() {
+                    super();
+                    this.tester = new FloatTester((msg) => this.port.postMessage(msg));
+                }
+                process(inputs, outputs, parameters) {
+                    return this.tester.runChunk();
+                }
+            }
+            registerProcessor('advanced-float-test-processor', AdvancedFloatTestProcessor);
+        `;
+
+        const workerCode = sharedCore + `
+            const tester = new FloatTester((msg) => postMessage(msg));
+            
+            onmessage = function(e) {
+                if (e.data === 'start') {
+                    function loop() {
+                        if (tester.runChunk()) {
+                            // Yield back to the event loop so Turbofan's background 
+                            // thread can swap the newly optimized code in!
+                            setTimeout(loop, 0); 
+                        }
+                    }
+                    loop();
+                }
+            }
+        `;
+
+        const startWorkletBtn = document.getElementById('start-worklet-btn');
+        const startWorkerBtn = document.getElementById('start-worker-btn');
+        const statusText = document.getElementById('status-text');
+        const logContainer = document.getElementById('log-container');
+        const progressBar = document.getElementById('progress-bar');
+        const progressText = document.getElementById('progress-text');
+        
+        let audioContext = null;
+        let testNode = null;
+        let logBuffer = [];
+        let lastDrawTime = performance.now();
+
+        function appendLog(message, isHighlight = false, isAlert = false) {
+            const div = document.createElement('div');
+            div.textContent = message;
+            if (isAlert) {
+                div.className = "text-red-400 font-bold mb-2 p-2 bg-red-900 bg-opacity-20 border border-red-700 rounded";
+            } else if (isHighlight) {
+                div.className = "text-green-400 font-bold mb-2";
+            } else {
+                div.className = "text-gray-300 border-b border-gray-800 pb-1 mb-1";
+            }
+            logContainer.appendChild(div);
+            logContainer.scrollTop = logContainer.scrollHeight;
+        }
+
+        function processTestMessage(data, contextName, cleanupCallback) {
+            if (data.type === 'state-change') {
+                const msg = `🚨 JIT BUG DETECTED in ${contextName}: State changed at iteration ${data.iteration.toLocaleString()}!`;
+                appendLog(msg, false, true);
+                const details = `Denormals Used flipped from ${data.oldResult} to ${data.newResult}. Last non-zero value: ${data.lastVal.toExponential(3)}`;
+                appendLog(details, false, true);
+            } else if (data.type === 'progress') {
+                const msg = `[${contextName} Iter ${data.iteration.toLocaleString().padStart(10)}] Denormals Used: ${data.result} (Last Val: ${data.lastVal.toExponential(3)})`;
+                logBuffer.push(msg);
+
+                const now = performance.now();
+                if (now - lastDrawTime > 16) {
+                    logBuffer.forEach(m => {
+                        const div = document.createElement('div');
+                        div.textContent = m;
+                        div.className = "text-gray-300";
+                        logContainer.appendChild(div);
+                    });
+                    logBuffer = [];
+                    logContainer.scrollTop = logContainer.scrollHeight;
+
+                    // Fixed pct math for 10,000,000 iterations
+                    const pct = (data.iteration / 10000000) * 100;
+                    progressBar.style.width = `${pct}%`;
+                    progressText.textContent = `${data.iteration.toLocaleString()} / 10,000,000`;
+                    
+                    lastDrawTime = now;
+                }
+
+            } else if (data.type === 'complete') {
+                logBuffer.forEach(m => {
+                    const div = document.createElement('div');
+                    div.textContent = m;
+                    div.className = "text-gray-300";
+                    logContainer.appendChild(div);
+                });
+                logBuffer = [];
+                
+                progressBar.style.width = `100%`;
+                progressText.textContent = `10,000,000 / 10,000,000`;
+                
+                appendLog(`✔ ${contextName} Test Completed. Dummy value: ${data.dummy}`, true);
+                statusText.textContent = 'Test Finished';
+                statusText.className = 'text-green-400';
+                
+                if (cleanupCallback) cleanupCallback();
+                enableButtons();
+            }
+        }
+
+        function disableButtons() {
+            startWorkletBtn.disabled = true;
+            startWorkerBtn.disabled = true;
+            startWorkletBtn.classList.add('opacity-50', 'cursor-not-allowed');
+            startWorkerBtn.classList.add('opacity-50', 'cursor-not-allowed');
+        }
+
+        function enableButtons() {
+            startWorkletBtn.disabled = false;
+            startWorkerBtn.disabled = false;
+            startWorkletBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+            startWorkerBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+        }
+
+        function resetUI(contextName) {
+            logContainer.innerHTML = '';
+            progressBar.style.width = '0%';
+            progressText.textContent = '0 / 10,000,000';
+            statusText.textContent = `Initializing ${contextName}...`;
+            statusText.className = 'text-blue-400';
+            logBuffer = [];
+            lastDrawTime = performance.now();
+        }
+
+        async function runWorkletTest() {
+            try {
+                disableButtons();
+                resetUI('Audio Worklet');
+
+                if (audioContext && audioContext.state !== 'closed') {
+                    await audioContext.close();
+                }
+
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                statusText.textContent = 'Loading Worklet...';
+
+                const blob = new Blob([workletCode], { type: 'application/javascript' });
+                const blobUrl = URL.createObjectURL(blob);
+
+                await audioContext.audioWorklet.addModule(blobUrl);
+
+                statusText.textContent = 'Running Audio Worklet...';
+                appendLog('▶ AudioWorklet module loaded. Instantiating Node...', true);
+
+                testNode = new AudioWorkletNode(audioContext, 'advanced-float-test-processor');
+                
+                testNode.port.onmessage = (event) => {
+                    processTestMessage(event.data, 'Worklet', () => testNode.disconnect());
+                };
+            } catch (error) {
+                console.error(error);
+                appendLog(`❌ Error: ${error.message}`, true);
+                statusText.textContent = 'Error occurred';
+                statusText.className = 'text-red-500';
+                enableButtons();
+            }
+        }
+
+        function runWorkerTest() {
+            disableButtons();
+            resetUI('Web Worker');
+            
+            appendLog('▶ Starting Web Worker test...', true);
+            const blob = new Blob([workerCode], { type: 'application/javascript' });
+            const workerUrl = URL.createObjectURL(blob);
+            const worker = new Worker(workerUrl);
+            
+            worker.onmessage = (event) => {
+                processTestMessage(event.data, 'Worker', () => worker.terminate());
+            };
+            
+            statusText.textContent = 'Running Web Worker...';
+            worker.postMessage('start');
+        }
+
+        startWorkletBtn.addEventListener('click', runWorkletTest);
+        startWorkerBtn.addEventListener('click', runWorkerTest);
+    </script>
+</body>
+</html>
