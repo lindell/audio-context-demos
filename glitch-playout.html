@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Audio Lag Investigator</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-50 text-gray-800 font-sans p-6 min-h-screen">
+
+    <div class="max-w-4xl mx-auto space-y-6">
+        
+        <header class="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
+            <h1 class="text-2xl font-bold mb-2 text-gray-900">Audio Lag Investigator</h1>
+            <p class="text-gray-600 mb-4">Use this tool to test how different performance constraints affect standard <code>&lt;audio&gt;</code> element playback.</p>
+            
+            <div class="bg-blue-50 p-4 rounded-md flex items-center justify-between border border-blue-100">
+                <span class="text-blue-800 font-medium">Main Thread Activity Monitor:</span>
+                <span id="frame-counter" class="font-mono bg-blue-800 text-white px-3 py-1 rounded">Frames: 0</span>
+            </div>
+            <p class="text-xs text-gray-500 mt-2">If the counter above stops updating, the main thread is currently blocked.</p>
+        </header>
+
+        <!-- Baseline Audio Section -->
+        <section class="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
+            <h2 class="text-xl font-semibold mb-4 border-b pb-2">1. Baseline Playout (&lt;audio&gt; element)</h2>
+            <button id="btn-create-audio" class="px-4 py-2 bg-indigo-600 text-white rounded shadow hover:bg-indigo-700 transition mb-4">
+                + Create Audio Element & Play
+            </button>
+            <div id="audio-container" class="space-y-4">
+                <!-- Audio elements will be injected here -->
+            </div>
+        </section>
+
+        <div class="grid md:grid-cols-2 gap-6">
+            
+            <!-- CPU Starvation: Main Thread -->
+            <section class="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
+                <h2 class="text-lg font-semibold mb-2 text-red-700">Cause A: Main Thread CPU Starvation</h2>
+                <p class="text-sm text-gray-600 mb-4">Locks the main UI thread in a tight `while` loop for a specific duration.</p>
+                
+                <div class="flex items-center space-x-3 mb-4">
+                    <label for="mt-duration" class="text-sm font-medium">Duration (ms):</label>
+                    <input type="number" id="mt-duration" value="2000" class="border border-gray-300 rounded px-2 py-1 w-24 focus:ring-red-500 focus:border-red-500">
+                </div>
+                
+                <button id="btn-block-main" class="px-4 py-2 bg-red-600 text-white rounded shadow hover:bg-red-700 transition w-full">
+                    Block Main Thread Now
+                </button>
+            </section>
+
+            <!-- CPU Starvation: Web Worker -->
+            <section class="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
+                <h2 class="text-lg font-semibold mb-2 text-orange-700">Cause B: Worker Thread CPU Starvation</h2>
+                <p class="text-sm text-gray-600 mb-4">Spins up a Web Worker that runs an infinite math calculation loop, maxing out a CPU core.</p>
+                
+                <div class="flex items-center justify-between mb-4">
+                    <span class="text-sm font-medium">Worker Status:</span>
+                    <span id="worker-status" class="text-sm font-bold text-gray-500">Idle</span>
+                </div>
+
+                <div class="flex space-x-2">
+                    <button id="btn-start-worker" class="px-4 py-2 bg-orange-600 text-white rounded shadow hover:bg-orange-700 transition flex-1">
+                        Start Intense Loop
+                    </button>
+                    <button id="btn-stop-worker" disabled class="px-4 py-2 bg-gray-300 text-gray-500 rounded cursor-not-allowed flex-1 transition disabled:opacity-50">
+                        Stop Worker
+                    </button>
+                </div>
+            </section>
+
+            <!-- AudioContext Interference -->
+            <section class="bg-white p-6 rounded-lg shadow-sm border border-gray-200 md:col-span-2">
+                <h2 class="text-lg font-semibold mb-2 text-purple-700">Cause C: AudioContext Interference</h2>
+                <p class="text-sm text-gray-600 mb-4">Creates a Web Audio API <code>AudioContext</code> and continuously plays a silent oscillator to the hardware destination, potentially competing for audio thread priorities.</p>
+                
+                <div class="flex items-center justify-between mb-4 bg-gray-50 p-3 rounded border">
+                    <span class="text-sm font-medium">AudioContext State:</span>
+                    <span id="ac-status" class="text-sm font-bold text-gray-500">Not Created</span>
+                </div>
+
+                <div class="flex space-x-2">
+                    <button id="btn-start-ac" class="px-4 py-2 bg-purple-600 text-white rounded shadow hover:bg-purple-700 transition flex-1">
+                        Create Context & Play Silence
+                    </button>
+                    <button id="btn-suspend-ac" disabled class="px-4 py-2 bg-gray-300 text-gray-500 rounded cursor-not-allowed flex-1 transition disabled:opacity-50">
+                        Suspend AudioContext
+                    </button>
+                </div>
+            </section>
+
+        </div>
+    </div>
+
+    <script>
+        // --- 0. Visual Main Thread Monitor ---
+        let frameCount = 0;
+        const frameCounterEl = document.getElementById('frame-counter');
+        
+        function animateFrames() {
+            frameCount++;
+            frameCounterEl.textContent = `Frames: ${frameCount}`;
+            requestAnimationFrame(animateFrames);
+        }
+        requestAnimationFrame(animateFrames);
+
+
+        // --- 1. Audio Element Playout ---
+        const AUDIO_URL = "https://raw.githubusercontent.com/membraneframework/membrane_demo/master/simple_pipeline/sample.mp3";
+        const btnCreateAudio = document.getElementById('btn-create-audio');
+        const audioContainer = document.getElementById('audio-container');
+
+        btnCreateAudio.addEventListener('click', () => {
+            const wrapper = document.createElement('div');
+            wrapper.className = "flex items-center space-x-4 p-3 bg-gray-50 rounded border border-gray-200";
+            
+            const audioEl = document.createElement('audio');
+            audioEl.controls = true;
+            audioEl.crossOrigin = "anonymous";
+            audioEl.src = AUDIO_URL;
+            audioEl.className = "flex-1";
+            
+            const btnRemove = document.createElement('button');
+            btnRemove.textContent = "Remove";
+            btnRemove.className = "text-sm text-red-600 hover:text-red-800 underline";
+            btnRemove.onclick = () => {
+                audioEl.pause();
+                audioEl.removeAttribute('src');
+                audioEl.load();
+                wrapper.remove();
+            };
+
+            wrapper.appendChild(audioEl);
+            wrapper.appendChild(btnRemove);
+            audioContainer.appendChild(wrapper);
+
+            audioEl.play().catch(err => {
+                console.error("Audio playback failed to start automatically:", err);
+                alert("Playback blocked by browser policy. Please click 'Play' manually.");
+            });
+        });
+
+
+        // --- 2. Main Thread Starvation ---
+        const btnBlockMain = document.getElementById('btn-block-main');
+        const inputMtDuration = document.getElementById('mt-duration');
+
+        btnBlockMain.addEventListener('click', () => {
+            const duration = parseInt(inputMtDuration.value, 10) || 1000;
+            
+            // Short timeout to allow UI button click styling to render before lockup
+            setTimeout(() => {
+                const end = Date.now() + duration;
+                console.log(`Blocking main thread for ${duration}ms...`);
+                // Intense loop blocking the thread
+                while (Date.now() < end) {
+                    Math.random(); 
+                }
+                console.log("Main thread unblocked.");
+            }, 50);
+        });
+
+
+        // --- 3. Web Worker Starvation ---
+        let worker = null;
+        const btnStartWorker = document.getElementById('btn-start-worker');
+        const btnStopWorker = document.getElementById('btn-stop-worker');
+        const workerStatus = document.getElementById('worker-status');
+
+        // Dynamically create worker code to keep everything in one file
+        const workerCode = `
+            self.onmessage = function(e) {
+                if (e.data === 'start') {
+                    // Infinite loop to max out CPU core
+                    while(true) { 
+                        Math.sqrt(Math.random() * Math.random()); 
+                    }
+                }
+            };
+        `;
+
+        btnStartWorker.addEventListener('click', () => {
+            if (worker) return;
+            const blob = new Blob([workerCode], { type: 'application/javascript' });
+            worker = new Worker(URL.createObjectURL(blob));
+            worker.postMessage('start');
+            
+            workerStatus.textContent = "Running (Starving CPU)";
+            workerStatus.className = "text-sm font-bold text-red-600 animate-pulse";
+            
+            btnStartWorker.disabled = true;
+            btnStartWorker.classList.add('bg-gray-300', 'text-gray-500', 'cursor-not-allowed');
+            btnStartWorker.classList.remove('bg-orange-600', 'hover:bg-orange-700');
+            
+            btnStopWorker.disabled = false;
+            btnStopWorker.classList.remove('bg-gray-300', 'text-gray-500', 'cursor-not-allowed');
+            btnStopWorker.classList.add('bg-gray-800', 'text-white', 'hover:bg-gray-900');
+        });
+
+        btnStopWorker.addEventListener('click', () => {
+            if (worker) {
+                worker.terminate();
+                worker = null;
+                
+                workerStatus.textContent = "Idle";
+                workerStatus.className = "text-sm font-bold text-gray-500";
+                
+                btnStartWorker.disabled = false;
+                btnStartWorker.classList.remove('bg-gray-300', 'text-gray-500', 'cursor-not-allowed');
+                btnStartWorker.classList.add('bg-orange-600', 'hover:bg-orange-700');
+                
+                btnStopWorker.disabled = true;
+                btnStopWorker.classList.add('bg-gray-300', 'text-gray-500', 'cursor-not-allowed');
+                btnStopWorker.classList.remove('bg-gray-800', 'text-white', 'hover:bg-gray-900');
+            }
+        });
+
+
+        // --- 4. AudioContext Interference ---
+        let audioCtx = null;
+        let silentOscillator = null;
+        
+        const btnStartAc = document.getElementById('btn-start-ac');
+        const btnSuspendAc = document.getElementById('btn-suspend-ac');
+        const acStatus = document.getElementById('ac-status');
+
+        btnStartAc.addEventListener('click', () => {
+            if (!audioCtx) {
+                // Instantiate AudioContext
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            }
+
+            if (audioCtx.state === 'suspended') {
+                audioCtx.resume();
+            }
+
+            if (!silentOscillator) {
+                silentOscillator = audioCtx.createOscillator();
+                const gainNode = audioCtx.createGain();
+                
+                // Make it strictly silent
+                gainNode.gain.value = 0; 
+                
+                silentOscillator.connect(gainNode);
+                gainNode.connect(audioCtx.destination);
+                silentOscillator.start();
+            }
+
+            updateAcUI();
+        });
+
+        btnSuspendAc.addEventListener('click', () => {
+            if (audioCtx && audioCtx.state === 'running') {
+                audioCtx.suspend().then(() => {
+                    updateAcUI();
+                });
+            }
+        });
+
+        function updateAcUI() {
+            if (audioCtx && audioCtx.state === 'running') {
+                acStatus.textContent = "Active (Playing Silence)";
+                acStatus.className = "text-sm font-bold text-purple-600 animate-pulse";
+                
+                btnStartAc.disabled = true;
+                btnStartAc.classList.add('bg-gray-300', 'text-gray-500', 'cursor-not-allowed');
+                btnStartAc.classList.remove('bg-purple-600', 'hover:bg-purple-700');
+                
+                btnSuspendAc.disabled = false;
+                btnSuspendAc.classList.remove('bg-gray-300', 'text-gray-500', 'cursor-not-allowed');
+                btnSuspendAc.classList.add('bg-gray-800', 'text-white', 'hover:bg-gray-900');
+            } else {
+                acStatus.textContent = audioCtx ? `Suspended` : `Not Created`;
+                acStatus.className = "text-sm font-bold text-gray-500";
+                
+                btnStartAc.disabled = false;
+                btnStartAc.classList.remove('bg-gray-300', 'text-gray-500', 'cursor-not-allowed');
+                btnStartAc.classList.add('bg-purple-600', 'hover:bg-purple-700');
+                btnStartAc.textContent = "Resume Context & Silence";
+                
+                btnSuspendAc.disabled = true;
+                btnSuspendAc.classList.add('bg-gray-300', 'text-gray-500', 'cursor-not-allowed');
+                btnSuspendAc.classList.remove('bg-gray-800', 'text-white', 'hover:bg-gray-900');
+            }
+        }
+
+    </script>
+</body>
+</html>
