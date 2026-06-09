@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>addModule() Error Sandbox</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0f172a; /* tailwind slate-900 */
+            color: #e2e8f0; /* tailwind slate-200 */
+        }
+        pre, code {
+            font-family: 'Fira Code', monospace;
+        }
+        
+        /* Custom Scrollbar for code blocks */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: rgba(15, 23, 42, 0.5); 
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #334155; 
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #475569; 
+        }
+    </style>
+</head>
+<body class="min-h-screen p-4 md:p-8 selection:bg-indigo-500/30">
+
+    <div class="max-w-5xl mx-auto">
+        <header class="mb-10 text-center md:text-left">
+            <div class="inline-flex items-center justify-center p-3 mb-4 rounded-xl bg-indigo-500/10 text-indigo-400 ring-1 ring-indigo-500/30 shadow-lg shadow-indigo-500/10">
+                <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+            </div>
+            <h1 class="text-3xl md:text-5xl font-bold tracking-tight text-white mb-3">Worklet <code class="text-indigo-400 font-normal">addModule()</code> Errors</h1>
+            <p class="text-slate-400 max-w-2xl text-lg">
+                This playground intentionally triggers exceptions using <code class="text-sm bg-slate-800 px-1.5 py-0.5 rounded">AudioWorklet.addModule()</code> and <code class="text-sm bg-slate-800 px-1.5 py-0.5 rounded">CSS.paintWorklet.addModule()</code> to demonstrate how different failures (like 404s, CORS, or Invalid States) manifest in the browser.
+            </p>
+        </header>
+
+        <main class="grid grid-cols-1 md:grid-cols-2 gap-6">
+
+            <!-- Scenario 1: 404 Network Error -->
+            <div class="bg-slate-800/50 rounded-2xl border border-slate-700/50 p-6 shadow-xl backdrop-blur-sm flex flex-col transition-all hover:border-slate-600/80">
+                <div class="flex justify-between items-start mb-4">
+                    <div>
+                        <h2 class="text-xl font-semibold text-white mb-1">1. HTTP 404 (Not Found)</h2>
+                        <p class="text-sm text-slate-400">Attempts to load a module from an endpoint that returns a 404 status code.</p>
+                    </div>
+                    <span class="bg-amber-500/10 text-amber-400 text-xs font-semibold px-2.5 py-1 rounded-full border border-amber-500/20">AudioWorklet</span>
+                </div>
+                
+                <button onclick="triggerAudio404()" class="mt-auto bg-slate-700 hover:bg-slate-600 text-white font-medium py-2.5 px-4 rounded-lg transition-colors border border-slate-600 w-full flex justify-center items-center gap-2 group focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2 focus:ring-offset-slate-900">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="group-hover:rotate-12 transition-transform"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+                    Trigger 404 Error
+                </button>
+                <div id="out-audio-404" class="mt-4 hidden flex-col gap-2"></div>
+            </div>
+
+            <!-- Scenario 2: Syntax Error -->
+            <div class="bg-slate-800/50 rounded-2xl border border-slate-700/50 p-6 shadow-xl backdrop-blur-sm flex flex-col transition-all hover:border-slate-600/80">
+                <div class="flex justify-between items-start mb-4">
+                    <div>
+                        <h2 class="text-xl font-semibold text-white mb-1">2. JS Syntax Error</h2>
+                        <p class="text-sm text-slate-400">Loads a module via Blob URL that contains intentionally invalid JavaScript syntax.</p>
+                    </div>
+                    <span class="bg-amber-500/10 text-amber-400 text-xs font-semibold px-2.5 py-1 rounded-full border border-amber-500/20">AudioWorklet</span>
+                </div>
+                
+                <button onclick="triggerAudioSyntax()" class="mt-auto bg-slate-700 hover:bg-slate-600 text-white font-medium py-2.5 px-4 rounded-lg transition-colors border border-slate-600 w-full flex justify-center items-center gap-2 group focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2 focus:ring-offset-slate-900">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="group-hover:rotate-12 transition-transform"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+                    Trigger Syntax Error
+                </button>
+                <div id="out-audio-syntax" class="mt-4 hidden flex-col gap-2"></div>
+            </div>
+
+            <!-- Scenario 3: Blob URL with Query Params -->
+            <div class="bg-slate-800/50 rounded-2xl border border-slate-700/50 p-6 shadow-xl backdrop-blur-sm flex flex-col transition-all hover:border-slate-600/80">
+                <div class="flex justify-between items-start mb-4">
+                    <div>
+                        <h2 class="text-xl font-semibold text-white mb-1">3. Blob URL + Query Param</h2>
+                        <p class="text-sm text-slate-400">Attempts to load a Blob URL that has a query string appended, which causes fetch failures in some browsers.</p>
+                    </div>
+                    <span class="bg-amber-500/10 text-amber-400 text-xs font-semibold px-2.5 py-1 rounded-full border border-amber-500/20">AudioWorklet</span>
+                </div>
+                
+                <button onclick="triggerAudioBlobQuery()" class="mt-auto bg-slate-700 hover:bg-slate-600 text-white font-medium py-2.5 px-4 rounded-lg transition-colors border border-slate-600 w-full flex justify-center items-center gap-2 group focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2 focus:ring-offset-slate-900">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="group-hover:rotate-12 transition-transform"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+                    Trigger Blob Query Error
+                </button>
+                <div id="out-audio-blob" class="mt-4 hidden flex-col gap-2"></div>
+            </div>
+
+            <!-- Scenario 4: CORS Violation / Generic Network -->
+            <div class="bg-slate-800/50 rounded-2xl border border-slate-700/50 p-6 shadow-xl backdrop-blur-sm flex flex-col transition-all hover:border-slate-600/80">
+                <div class="flex justify-between items-start mb-4">
+                    <div>
+                        <h2 class="text-xl font-semibold text-white mb-1">4. CORS / Network Fail</h2>
+                        <p class="text-sm text-slate-400">Attempts to load a script from a cross-origin URL (example.com) that does not provide correct CORS headers.</p>
+                    </div>
+                    <span class="bg-amber-500/10 text-amber-400 text-xs font-semibold px-2.5 py-1 rounded-full border border-amber-500/20">AudioWorklet</span>
+                </div>
+                
+                <button onclick="triggerAudioCORS()" class="mt-auto bg-slate-700 hover:bg-slate-600 text-white font-medium py-2.5 px-4 rounded-lg transition-colors border border-slate-600 w-full flex justify-center items-center gap-2 group focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2 focus:ring-offset-slate-900">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="group-hover:rotate-12 transition-transform"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+                    Trigger CORS Error
+                </button>
+                <div id="out-audio-cors" class="mt-4 hidden flex-col gap-2"></div>
+            </div>
+
+        </main>
+    </div>
+
+    <script>
+        /**
+         * Formats an Error or DOMException into a readable string
+         */
+        function formatError(err) {
+            if (err instanceof DOMException) {
+                return `[DOMException] ${err.name}: ${err.message}`;
+            } else if (err instanceof Error) {
+                return `[${err.name}] ${err.message}`;
+            } else if (typeof err === 'object') {
+                return JSON.stringify(err);
+            }
+            return String(err);
+        }
+
+        /**
+         * Renders the error output box into the target container
+         */
+        function renderOutput(containerId, error, codeSnippet) {
+            const container = document.getElementById(containerId);
+            container.classList.remove('hidden');
+            container.classList.add('flex');
+            
+            const errorMsg = formatError(error);
+            
+            container.innerHTML = `
+                <div class="mt-2 bg-red-950/40 border border-red-900/50 rounded-lg p-3">
+                    <div class="flex items-center gap-2 text-red-400 font-semibold text-sm mb-1">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/></svg>
+                        Caught Exception
+                    </div>
+                    <div class="text-red-200 text-sm break-words font-mono">${errorMsg}</div>
+                </div>
+                
+                <div class="mt-2 bg-slate-900/80 border border-slate-700/80 rounded-lg p-3 overflow-hidden">
+                    <div class="flex items-center gap-2 text-slate-400 font-semibold text-xs mb-2 uppercase tracking-wider">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+                        Executed Code
+                    </div>
+                    <pre class="text-emerald-400 text-xs overflow-x-auto whitespace-pre-wrap"><code>${codeSnippet}</code></pre>
+                </div>
+            `;
+        }
+
+        /**
+         * Resets UI state for a specific container
+         */
+        function resetContainer(containerId) {
+            const container = document.getElementById(containerId);
+            container.innerHTML = `<div class="text-sm text-slate-400 flex items-center gap-2 p-2"><svg class="animate-spin h-4 w-4 text-indigo-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg> Executing...</div>`;
+            container.classList.remove('hidden');
+            container.classList.add('flex');
+        }
+
+
+        // 1. AudioWorklet HTTP 404
+        async function triggerAudio404() {
+            const id = 'out-audio-404';
+            resetContainer(id);
+            const code = `const ctx = new AudioContext();\n// Pointing to a service that strictly returns a 404 Not Found\nawait ctx.audioWorklet.addModule('https://httpbin.org/status/404');`;
+            
+            try {
+                const ctx = new AudioContext();
+                await ctx.audioWorklet.addModule('https://httpbin.org/status/404');
+            } catch (error) {
+                renderOutput(id, error, code);
+            }
+        }
+
+        // 2. AudioWorklet Syntax Error
+        async function triggerAudioSyntax() {
+            const id = 'out-audio-syntax';
+            resetContainer(id);
+            const code = `const ctx = new AudioContext();\n// Create intentional syntax error\nconst badCode = 'const this_is_invalid_js = ;';\nconst blob = new Blob([badCode], { type: 'application/javascript' });\n\nawait ctx.audioWorklet.addModule(URL.createObjectURL(blob));`;
+            
+            try {
+                const ctx = new AudioContext();
+                const badCode = 'const this_is_invalid_js = ;';
+                const blob = new Blob([badCode], { type: 'application/javascript' });
+                await ctx.audioWorklet.addModule(URL.createObjectURL(blob));
+            } catch (error) {
+                renderOutput(id, error, code);
+            }
+        }
+
+        // 3. Blob URL + Query Params
+        async function triggerAudioBlobQuery() {
+            const id = 'out-audio-blob';
+            resetContainer(id);
+            const code = `const ctx = new AudioContext();\nconst blob = new Blob(['console.log("ok");'], { type: 'application/javascript' });\nconst blobUrl = URL.createObjectURL(blob);\n\n// Adding a query parameter to a Blob URL often breaks the fetch resolution\nawait ctx.audioWorklet.addModule(blobUrl + '?version=1.0.0');`;
+            
+            try {
+                const ctx = new AudioContext();
+                const blob = new Blob(['console.log("ok");'], { type: 'application/javascript' });
+                const blobUrl = URL.createObjectURL(blob);
+                await ctx.audioWorklet.addModule(blobUrl + '?version=1.0.0');
+            } catch (error) {
+                renderOutput(id, error, code);
+            }
+        }
+
+        // 4. AudioWorklet CORS / Network Error
+        async function triggerAudioCORS() {
+            const id = 'out-audio-cors';
+            resetContainer(id);
+            const code = `const ctx = new AudioContext();\n// example.com exists but does not return Access-Control-Allow-Origin headers\nawait ctx.audioWorklet.addModule('https://example.com/script.js');`;
+            
+            try {
+                const ctx = new AudioContext();
+                await ctx.audioWorklet.addModule('https://example.com/script.js');
+            } catch (error) {
+                renderOutput(id, error, code);
+            }
+        }
+    </script>
+</body>
+</html>
