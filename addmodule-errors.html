@@ -43,7 +43,7 @@
             </div>
             <h1 class="text-3xl md:text-5xl font-bold tracking-tight text-white mb-3">Worklet <code class="text-indigo-400 font-normal">addModule()</code> Errors</h1>
             <p class="text-slate-400 max-w-2xl text-lg">
-                This playground intentionally triggers exceptions using <code class="text-sm bg-slate-800 px-1.5 py-0.5 rounded">AudioWorklet.addModule()</code> and <code class="text-sm bg-slate-800 px-1.5 py-0.5 rounded">CSS.paintWorklet.addModule()</code> to demonstrate how different failures (like 404s, CORS, or Invalid States) manifest in the browser.
+                This playground intentionally triggers exceptions using <code class="text-sm bg-slate-800 px-1.5 py-0.5 rounded">AudioWorklet.addModule()</code> to demonstrate how different failures (like 404s, CORS, or Invalid States) manifest in the browser.
             </p>
         </header>
 
@@ -117,6 +117,23 @@
                 <div id="out-audio-cors" class="mt-4 hidden flex-col gap-2"></div>
             </div>
 
+            <!-- Scenario 5: Close During addModule -->
+            <div class="bg-slate-800/50 rounded-2xl border border-slate-700/50 p-6 shadow-xl backdrop-blur-sm flex flex-col transition-all hover:border-slate-600/80">
+                <div class="flex justify-between items-start mb-4">
+                    <div>
+                        <h2 class="text-xl font-semibold text-white mb-1">5. Close During addModule</h2>
+                        <p class="text-sm text-slate-400">Calls <code>addModule()</code> without awaiting, immediately closes the context, and then checks the module promise.</p>
+                    </div>
+                    <span class="bg-amber-500/10 text-amber-400 text-xs font-semibold px-2.5 py-1 rounded-full border border-amber-500/20">AudioWorklet</span>
+                </div>
+                
+                <button onclick="triggerAudioCloseDuring()" class="mt-auto bg-slate-700 hover:bg-slate-600 text-white font-medium py-2.5 px-4 rounded-lg transition-colors border border-slate-600 w-full flex justify-center items-center gap-2 group focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2 focus:ring-offset-slate-900">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="group-hover:rotate-12 transition-transform"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+                    Trigger Close During
+                </button>
+                <div id="out-audio-close-during" class="mt-4 hidden flex-col gap-2"></div>
+            </div>
+
         </main>
     </div>
 
@@ -165,6 +182,33 @@
         }
 
         /**
+         * Renders the success output box into the target container
+         */
+        function renderSuccess(containerId, message, codeSnippet) {
+            const container = document.getElementById(containerId);
+            container.classList.remove('hidden');
+            container.classList.add('flex');
+            
+            container.innerHTML = `
+                <div class="mt-2 bg-emerald-950/40 border border-emerald-900/50 rounded-lg p-3">
+                    <div class="flex items-center gap-2 text-emerald-400 font-semibold text-sm mb-1">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+                        Success
+                    </div>
+                    <div class="text-emerald-200 text-sm break-words">${message}</div>
+                </div>
+                
+                <div class="mt-2 bg-slate-900/80 border border-slate-700/80 rounded-lg p-3 overflow-hidden">
+                    <div class="flex items-center gap-2 text-slate-400 font-semibold text-xs mb-2 uppercase tracking-wider">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+                        Executed Code
+                    </div>
+                    <pre class="text-emerald-400 text-xs overflow-x-auto whitespace-pre-wrap"><code>${codeSnippet}</code></pre>
+                </div>
+            `;
+        }
+
+        /**
          * Resets UI state for a specific container
          */
         function resetContainer(containerId) {
@@ -184,6 +228,7 @@
             try {
                 const ctx = new AudioContext();
                 await ctx.audioWorklet.addModule('https://httpbin.org/status/404');
+                renderSuccess(id, "Module loaded successfully (Unexpected for 404!)", code);
             } catch (error) {
                 renderOutput(id, error, code);
             }
@@ -200,6 +245,7 @@
                 const badCode = 'const this_is_invalid_js = ;';
                 const blob = new Blob([badCode], { type: 'application/javascript' });
                 await ctx.audioWorklet.addModule(URL.createObjectURL(blob));
+                renderSuccess(id, "Module loaded successfully (Unexpected for Syntax Error!)", code);
             } catch (error) {
                 renderOutput(id, error, code);
             }
@@ -216,6 +262,7 @@
                 const blob = new Blob(['console.log("ok");'], { type: 'application/javascript' });
                 const blobUrl = URL.createObjectURL(blob);
                 await ctx.audioWorklet.addModule(blobUrl + '?version=1.0.0');
+                renderSuccess(id, "Module loaded successfully (Browser permitted query param on Blob URL)", code);
             } catch (error) {
                 renderOutput(id, error, code);
             }
@@ -230,6 +277,25 @@
             try {
                 const ctx = new AudioContext();
                 await ctx.audioWorklet.addModule('https://example.com/script.js');
+                renderSuccess(id, "Module loaded successfully (Unexpected for CORS Error!)", code);
+            } catch (error) {
+                renderOutput(id, error, code);
+            }
+        }
+
+        // 5. Close During addModule
+        async function triggerAudioCloseDuring() {
+            const id = 'out-audio-close-during';
+            resetContainer(id);
+            const code = `const ctx = new AudioContext();\n// 1. Call addModule without awaiting the result\nconst modulePromise = ctx.audioWorklet.addModule('https://httpbin.org/delay/1');\n\n// 2. Close the context while the module is still being fetched/compiled\nctx.close();\n\n// 3. Await the promise to see its final status\nawait modulePromise;`;
+            
+            try {
+                const ctx = new AudioContext();
+                // Using a delayed endpoint guarantees the fetch remains pending while close() is executed
+                const modulePromise = ctx.audioWorklet.addModule('https://httpbin.org/delay/1');
+                ctx.close();
+                await modulePromise;
+                renderSuccess(id, "Module promise resolved successfully despite the AudioContext being closed during fetch/compile.", code);
             } catch (error) {
                 renderOutput(id, error, code);
             }
