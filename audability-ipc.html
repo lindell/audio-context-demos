@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebAudio Audibility IPC Stress Test</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen flex flex-col items-center justify-center p-8 font-sans">
+
+    <div class="max-w-xl w-full bg-gray-800 p-8 rounded-xl shadow-2xl border border-gray-700">
+        <h1 class="text-2xl font-bold mb-4 text-white">Audibility IPC Repro</h1>
+        
+        <p class="text-gray-400 mb-6 text-sm">
+            Emits 1ms noise bursts at configurable intervals via WebAudio or <code class="bg-gray-700 px-1 rounded text-blue-300">&lt;audio&gt;</code> to force rapid audible/silent state transitions, testing Mojo IPCs when this happens.
+        </p>
+
+        <div class="flex flex-col items-center gap-4">
+            <div class="flex flex-col md:flex-row gap-4 w-full justify-center">
+                <button id="startBtn" class="bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 px-8 rounded-lg shadow-lg transition-colors focus:outline-none focus:ring-4 focus:ring-blue-500/50 w-full md:w-auto">
+                    Start WebAudio Stress Test
+                </button>
+                <button id="stopBtn" class="bg-red-600 hover:bg-red-500 text-white font-bold py-3 px-8 rounded-lg shadow-lg transition-colors focus:outline-none focus:ring-4 focus:ring-red-500/50 w-full md:w-auto hidden">
+                    Stop WebAudio
+                </button>
+            </div>
+
+            <div class="flex flex-col md:flex-row gap-4 w-full justify-center">
+                <button id="startMediaBtn" class="bg-green-600 hover:bg-green-500 text-white font-bold py-3 px-8 rounded-lg shadow-lg transition-colors focus:outline-none focus:ring-4 focus:ring-green-500/50 w-full md:w-auto">
+                    Start &lt;audio&gt; Element Playback
+                </button>
+                <button id="stopMediaBtn" class="bg-red-600 hover:bg-red-500 text-white font-bold py-3 px-8 rounded-lg shadow-lg transition-colors focus:outline-none focus:ring-4 focus:ring-red-500/50 w-full md:w-auto hidden">
+                    Stop &lt;audio&gt;
+                </button>
+            </div>
+
+            <div class="w-full bg-gray-700 p-5 rounded-lg border border-gray-600 mt-2">
+                <label for="intervalSlider" class="block text-sm font-bold text-gray-200 mb-3 flex justify-between items-center">
+                    <span>Burst Interval:</span>
+                    <span class="bg-gray-800 px-3 py-1 rounded text-blue-400 font-mono"><span id="intervalValue">3</span> ms</span>
+                </label>
+                <input type="range" id="intervalSlider" min="3" max="1000" value="3" class="w-full h-2 bg-gray-500 rounded-lg appearance-none cursor-pointer">
+            </div>
+
+            <div id="status" class="text-gray-500 font-mono text-sm mt-4 text-center">
+                Status: Waiting for user interaction...
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- WebAudio Worklet Implementation ---
+        const workletCode = `
+            class ToggleAudibilityProcessor extends AudioWorkletProcessor {
+                constructor() {
+                    super();
+                    this.framesElapsed = 0;
+                    this.toggleIntervalMs = 3;
+
+                    this.port.onmessage = (event) => {
+                        if (event.data.toggleIntervalMs !== undefined) {
+                            this.toggleIntervalMs = event.data.toggleIntervalMs;
+                        }
+                    };
+                }
+
+                process(inputs, outputs, parameters) {
+                    const output = outputs[0];
+                    const intervalFrames = (this.toggleIntervalMs / 1000) * sampleRate;
+                    const burstFrames = (1 / 1000) * sampleRate; // 1ms burst length
+                    const numFrames = output[0].length;
+                    
+                    for (let i = 0; i < numFrames; ++i) {
+                        if (this.framesElapsed >= intervalFrames) {
+                            this.framesElapsed -= intervalFrames;
+                        }
+                        
+                        const isBurst = this.framesElapsed < burstFrames;
+                        
+                        for (let channel = 0; channel < output.length; ++channel) {
+                            if (!isBurst) {
+                                output[channel][i] = 0.0;
+                            } else {
+                                output[channel][i] = Math.random() * 0.02 - 0.01;
+                            }
+                        }
+                        this.framesElapsed++;
+                    }
+
+                    return true;
+                }
+            }
+            registerProcessor('toggle-audibility-processor', ToggleAudibilityProcessor);
+        `;
+
+        let audioContext = null;
+        let workletNode = null;
+        let blobUrl = null;
+
+        // --- Standard <audio> Implementation ---
+        let htmlAudioElement = null;
+        let mediaBlobUrl = null;
+        let currentIntervalMs = 3;
+
+        // Generates an in-memory WAV file with very quiet noise
+        function createNoiseWavBlob(intervalMs) {
+            const sampleRate = 44100;
+            
+            // 1. First calculate the interval size
+            const intervalSamples = Math.max(1, Math.floor((intervalMs / 1000) * sampleRate));
+            
+            // 2. Ensure total length is an exact multiple of the interval so looping is seamless.
+            // We make the buffer roughly 30 seconds long to avoid HTMLMediaElement loop stutter.
+            const targetDurationSeconds = 30;
+            const numIntervals = Math.max(1, Math.ceil((sampleRate * targetDurationSeconds) / intervalSamples));
+            const numSamples = numIntervals * intervalSamples; 
+            
+            const buffer = new ArrayBuffer(44 + numSamples);
+            const view = new DataView(buffer);
+
+            const writeString = (view, offset, string) => {
+                for (let i = 0; i < string.length; i++) { view.setUint8(offset + i, string.charCodeAt(i)); }
+            };
+
+            writeString(view, 0, 'RIFF');
+            view.setUint32(4, 36 + numSamples, true);
+            writeString(view, 8, 'WAVE');
+            writeString(view, 12, 'fmt ');
+            view.setUint32(16, 16, true);
+            view.setUint16(20, 1, true); // PCM
+            view.setUint16(22, 1, true); // 1 channel
+            view.setUint32(24, sampleRate, true);
+            view.setUint32(28, sampleRate, true);
+            view.setUint16(32, 1, true);
+            view.setUint16(34, 8, true); // 8-bit
+            writeString(view, 36, 'data');
+            view.setUint32(40, numSamples, true);
+
+            const burstSamples = Math.floor((1 / 1000) * sampleRate); // 1ms burst
+            
+            for (let i = 0; i < numSamples; i++) {
+                if ((i % intervalSamples) < burstSamples) {
+                    // Audible burst: very quiet noise
+                    view.setUint8(44 + i, 128 + (Math.random() * 4 - 2));
+                } else {
+                    // Silent block: exactly 128 maps to 0.0 float energy in 8-bit unsigned PCM
+                    view.setUint8(44 + i, 128);
+                }
+            }
+
+            return new Blob([buffer], { type: 'audio/wav' });
+        }
+
+        // --- DOM Elements & Event Listeners ---
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const startMediaBtn = document.getElementById('startMediaBtn');
+        const stopMediaBtn = document.getElementById('stopMediaBtn');
+        const statusEl = document.getElementById('status');
+        const intervalSlider = document.getElementById('intervalSlider');
+        const intervalValue = document.getElementById('intervalValue');
+
+        // Slider Listener
+        intervalSlider.addEventListener('input', (e) => {
+            currentIntervalMs = parseFloat(e.target.value);
+            intervalValue.innerText = currentIntervalMs;
+            
+            if (workletNode) {
+                workletNode.port.postMessage({ toggleIntervalMs: currentIntervalMs });
+            }
+            
+            if (htmlAudioElement && !htmlAudioElement.paused) {
+                const currentTime = htmlAudioElement.currentTime;
+                if (mediaBlobUrl) URL.revokeObjectURL(mediaBlobUrl);
+                
+                mediaBlobUrl = URL.createObjectURL(createNoiseWavBlob(currentIntervalMs));
+                htmlAudioElement.src = mediaBlobUrl;
+                htmlAudioElement.currentTime = currentTime;
+                htmlAudioElement.play().catch(err => console.error("Slider audio update failed:", err));
+            } else if (mediaBlobUrl) {
+                URL.revokeObjectURL(mediaBlobUrl);
+                mediaBlobUrl = null;
+            }
+        });
+
+        // WebAudio Listeners
+        startBtn.addEventListener('click', async () => {
+            try {
+                if (htmlAudioElement) stopMediaBtn.click(); // Stop the other one if running
+                statusEl.innerText = "Status: Initializing WebAudio...";
+                
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                
+                const blob = new Blob([workletCode], { type: 'application/javascript' });
+                blobUrl = URL.createObjectURL(blob);
+                
+                await audioContext.audioWorklet.addModule(blobUrl);
+                
+                workletNode = new AudioWorkletNode(audioContext, 'toggle-audibility-processor');
+                workletNode.port.postMessage({ toggleIntervalMs: currentIntervalMs });
+                workletNode.connect(audioContext.destination);
+
+                performance.mark('webaudio-active-start');
+
+                startBtn.classList.add('hidden');
+                stopBtn.classList.remove('hidden');
+                statusEl.innerText = "Status: Running - Firing Mojo IPCs rapidly...";
+                statusEl.classList.remove('text-gray-500', 'text-red-400');
+                statusEl.classList.add('text-green-400');
+
+            } catch (error) {
+                console.error("Failed to initialize WebAudio:", error);
+                statusEl.innerText = "Error: " + error.message;
+                statusEl.classList.remove('text-gray-500', 'text-green-400');
+                statusEl.classList.add('text-red-400');
+            }
+        });
+
+        stopBtn.addEventListener('click', async () => {
+            if (audioContext) {
+                await audioContext.close();
+                audioContext = null;
+                workletNode = null;
+                
+                if (blobUrl) {
+                    URL.revokeObjectURL(blobUrl);
+                    blobUrl = null;
+                }
+
+                performance.mark('webaudio-active-stop');
+                try {
+                    performance.measure('WebAudio Active Duration', 'webaudio-active-start', 'webaudio-active-stop');
+                    console.log('WebAudio profiling measure:', performance.getEntriesByName('WebAudio Active Duration').pop());
+                } catch(e) { console.warn("Failed to measure WebAudio performance.", e); }
+
+                stopBtn.classList.add('hidden');
+                startBtn.classList.remove('hidden');
+                statusEl.innerText = "Status: Stopped WebAudio.";
+                statusEl.classList.remove('text-green-400', 'text-red-400');
+                statusEl.classList.add('text-gray-500');
+            }
+        });
+
+        // HTMLMediaElement (<audio>) Listeners
+        startMediaBtn.addEventListener('click', () => {
+            try {
+                if (audioContext) stopBtn.click(); // Stop WebAudio if running
+                statusEl.innerText = "Status: Initializing <audio>...";
+                
+                if (!mediaBlobUrl) {
+                    const blob = createNoiseWavBlob(currentIntervalMs);
+                    mediaBlobUrl = URL.createObjectURL(blob);
+                }
+
+                htmlAudioElement = new Audio(mediaBlobUrl);
+                htmlAudioElement.loop = true;
+                
+                htmlAudioElement.play().then(() => {
+                    performance.mark('htmlaudio-active-start');
+                    startMediaBtn.classList.add('hidden');
+                    stopMediaBtn.classList.remove('hidden');
+                    statusEl.innerText = "Status: Running - <audio> element playing looped noise...";
+                    statusEl.classList.remove('text-gray-500', 'text-red-400');
+                    statusEl.classList.add('text-green-400');
+                }).catch(error => {
+                    console.error("Failed to play <audio>:", error);
+                    statusEl.innerText = "Error: " + error.message;
+                    statusEl.classList.remove('text-gray-500', 'text-green-400');
+                    statusEl.classList.add('text-red-400');
+                });
+            } catch (error) {
+                console.error("Error setting up <audio>:", error);
+            }
+        });
+
+        stopMediaBtn.addEventListener('click', () => {
+            if (htmlAudioElement) {
+                htmlAudioElement.pause();
+                htmlAudioElement.src = "";
+                htmlAudioElement = null;
+
+                performance.mark('htmlaudio-active-stop');
+                try {
+                    performance.measure('<audio> Active Duration', 'htmlaudio-active-start', 'htmlaudio-active-stop');
+                    console.log('<audio> profiling measure:', performance.getEntriesByName('<audio> Active Duration').pop());
+                } catch(e) { console.warn("Failed to measure <audio> performance.", e); }
+
+                stopMediaBtn.classList.add('hidden');
+                startMediaBtn.classList.remove('hidden');
+                statusEl.innerText = "Status: Stopped <audio>.";
+                statusEl.classList.remove('text-green-400', 'text-red-400');
+                statusEl.classList.add('text-gray-500');
+            }
+        });
+    </script>
+</body>
+</html>
