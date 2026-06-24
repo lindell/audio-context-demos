@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebAudio Audibility IPC Stress Test</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen flex flex-col items-center justify-center p-8 font-sans">
+
+    <div class="max-w-xl w-full bg-gray-800 p-8 rounded-xl shadow-2xl border border-gray-700">
+        <h1 class="text-2xl font-bold mb-4 text-white">Audibility IPC Repro</h1>
+        
+        <p class="text-gray-400 mb-6 text-sm">
+            Stress-tests Chromium's audibility tracking using a free speech MP3. Plays a steady audio stream via WebAudio or the native <code class="bg-gray-700 px-1 rounded text-blue-300">&lt;audio&gt;</code> element to act as a natural baseline for IPC performance profiling.
+        </p>
+
+        <div class="flex flex-col items-center gap-4">
+            <div class="flex flex-col md:flex-row gap-4 w-full justify-center">
+                <button id="startBtn" class="bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 px-8 rounded-lg shadow-lg transition-colors focus:outline-none focus:ring-4 focus:ring-blue-500/50 w-full md:w-auto">
+                    Start WebAudio Stress Test
+                </button>
+                <button id="stopBtn" class="bg-red-600 hover:bg-red-500 text-white font-bold py-3 px-8 rounded-lg shadow-lg transition-colors focus:outline-none focus:ring-4 focus:ring-red-500/50 w-full md:w-auto hidden">
+                    Stop WebAudio
+                </button>
+            </div>
+
+            <div class="flex flex-col md:flex-row gap-4 w-full justify-center">
+                <button id="startMediaBtn" class="bg-green-600 hover:bg-green-500 text-white font-bold py-3 px-8 rounded-lg shadow-lg transition-colors focus:outline-none focus:ring-4 focus:ring-green-500/50 w-full md:w-auto">
+                    Start &lt;audio&gt; Element Playback
+                </button>
+                <button id="stopMediaBtn" class="bg-red-600 hover:bg-red-500 text-white font-bold py-3 px-8 rounded-lg shadow-lg transition-colors focus:outline-none focus:ring-4 focus:ring-red-500/50 w-full md:w-auto hidden">
+                    Stop &lt;audio&gt;
+                </button>
+            </div>
+
+            <div id="status" class="text-gray-500 font-mono text-sm mt-4 text-center">
+                Status: Waiting for user interaction...
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const AUDIO_URL = "https://mdn.github.io/webaudio-examples/audio-basics/outfoxing.mp3";
+
+        // --- WebAudio Worklet Implementation ---
+        const workletCode = `
+            class PassthroughProcessor extends AudioWorkletProcessor {
+                process(inputs, outputs) {
+                    const input = inputs[0];
+                    const output = outputs[0];
+                    const numFrames = output[0].length;
+                    
+                    const hasInput = input && input.length > 0;
+                    
+                    for (let i = 0; i < numFrames; ++i) {
+                        for (let channel = 0; channel < output.length; ++channel) {
+                            // Pass through the incoming speech audio from the source node steadily
+                            output[channel][i] = (hasInput && input[channel]) ? input[channel][i] : 0.0;
+                        }
+                    }
+
+                    return true;
+                }
+            }
+            registerProcessor('passthrough-processor', PassthroughProcessor);
+        `;
+
+        let audioContext = null;
+        let workletNode = null;
+        let sourceNode = null;
+        let blobUrl = null;
+
+        // --- Standard <audio> Implementation ---
+        let htmlAudioElement = null;
+
+        // --- DOM Elements & Event Listeners ---
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const startMediaBtn = document.getElementById('startMediaBtn');
+        const stopMediaBtn = document.getElementById('stopMediaBtn');
+        const statusEl = document.getElementById('status');
+
+        // WebAudio Listeners
+        startBtn.addEventListener('click', async () => {
+            try {
+                if (htmlAudioElement) stopMediaBtn.click(); // Stop the other one if running
+                statusEl.innerText = "Status: Initializing WebAudio & Downloading MP3...";
+                
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                
+                // Fetch and decode the MP3
+                const resp = await fetch(AUDIO_URL);
+                const arrayBuffer = await resp.arrayBuffer();
+                const decodedBuffer = await audioContext.decodeAudioData(arrayBuffer);
+                
+                const blob = new Blob([workletCode], { type: 'application/javascript' });
+                blobUrl = URL.createObjectURL(blob);
+                
+                await audioContext.audioWorklet.addModule(blobUrl);
+                
+                // Route: AudioBufferSource -> Passthrough Worklet -> Destination
+                sourceNode = audioContext.createBufferSource();
+                sourceNode.buffer = decodedBuffer;
+                sourceNode.loop = true;
+
+                workletNode = new AudioWorkletNode(audioContext, 'passthrough-processor');
+                
+                sourceNode.connect(workletNode);
+                workletNode.connect(audioContext.destination);
+                
+                sourceNode.start();
+
+                performance.mark('webaudio-active-start');
+
+                startBtn.classList.add('hidden');
+                stopBtn.classList.remove('hidden');
+                statusEl.innerText = "Status: Running - Playing steady MP3 via WebAudio...";
+                statusEl.classList.remove('text-gray-500', 'text-red-400');
+                statusEl.classList.add('text-green-400');
+
+            } catch (error) {
+                console.error("Failed to initialize WebAudio:", error);
+                statusEl.innerText = "Error: " + error.message;
+                statusEl.classList.remove('text-gray-500', 'text-green-400');
+                statusEl.classList.add('text-red-400');
+            }
+        });
+
+        stopBtn.addEventListener('click', async () => {
+            if (audioContext) {
+                if (sourceNode) {
+                    sourceNode.stop();
+                    sourceNode.disconnect();
+                    sourceNode = null;
+                }
+                await audioContext.close();
+                audioContext = null;
+                workletNode = null;
+                
+                if (blobUrl) {
+                    URL.revokeObjectURL(blobUrl);
+                    blobUrl = null;
+                }
+
+                performance.mark('webaudio-active-stop');
+                try {
+                    performance.measure('WebAudio Active Duration', 'webaudio-active-start', 'webaudio-active-stop');
+                    console.log('WebAudio profiling measure:', performance.getEntriesByName('WebAudio Active Duration').pop());
+                } catch(e) { console.warn("Failed to measure WebAudio performance.", e); }
+
+                stopBtn.classList.add('hidden');
+                startBtn.classList.remove('hidden');
+                statusEl.innerText = "Status: Stopped WebAudio.";
+                statusEl.classList.remove('text-green-400', 'text-red-400');
+                statusEl.classList.add('text-gray-500');
+            }
+        });
+
+        // HTMLMediaElement (<audio>) Listeners
+        startMediaBtn.addEventListener('click', () => {
+            try {
+                if (audioContext) stopBtn.click(); // Stop WebAudio if running
+                statusEl.innerText = "Status: Initializing <audio>...";
+
+                htmlAudioElement = new Audio(AUDIO_URL);
+                htmlAudioElement.crossOrigin = "anonymous";
+                htmlAudioElement.loop = true;
+                
+                htmlAudioElement.play().then(() => {
+                    performance.mark('htmlaudio-active-start');
+                    startMediaBtn.classList.add('hidden');
+                    stopMediaBtn.classList.remove('hidden');
+                    statusEl.innerText = "Status: Running - <audio> playing native speech...";
+                    statusEl.classList.remove('text-gray-500', 'text-red-400');
+                    statusEl.classList.add('text-green-400');
+                }).catch(error => {
+                    console.error("Failed to play <audio>:", error);
+                    statusEl.innerText = "Error: " + error.message;
+                    statusEl.classList.remove('text-gray-500', 'text-green-400');
+                    statusEl.classList.add('text-red-400');
+                });
+            } catch (error) {
+                console.error("Error setting up <audio>:", error);
+            }
+        });
+
+        stopMediaBtn.addEventListener('click', () => {
+            if (htmlAudioElement) {
+                htmlAudioElement.pause();
+                htmlAudioElement.src = "";
+                htmlAudioElement = null;
+
+                performance.mark('htmlaudio-active-stop');
+                try {
+                    performance.measure('<audio> Active Duration', 'htmlaudio-active-start', 'htmlaudio-active-stop');
+                    console.log('<audio> profiling measure:', performance.getEntriesByName('<audio> Active Duration').pop());
+                } catch(e) { console.warn("Failed to measure <audio> performance.", e); }
+
+                stopMediaBtn.classList.add('hidden');
+                startMediaBtn.classList.remove('hidden');
+                statusEl.innerText = "Status: Stopped <audio>.";
+                statusEl.classList.remove('text-green-400', 'text-red-400');
+                statusEl.classList.add('text-gray-500');
+            }
+        });
+    </script>
+</body>
+</html>
