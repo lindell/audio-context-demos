@@ -12,8 +12,20 @@
         <h1 class="text-2xl font-bold mb-4 text-white">Audibility IPC Repro</h1>
         
         <p class="text-gray-400 mb-6 text-sm">
-            Stress-tests Chromium's audibility tracking using a free speech MP3. Plays a steady audio stream via WebAudio or the native <code class="bg-gray-700 px-1 rounded text-blue-300">&lt;audio&gt;</code> element to act as a natural baseline for IPC performance profiling.
+            Stress-tests Chromium's audibility tracking using a free speech MP3. Plays a steady audio stream via WebAudio (forced to 48kHz) or the native <code class="bg-gray-700 px-1 rounded text-blue-300">&lt;audio&gt;</code> element to act as a natural baseline for IPC performance profiling.
         </p>
+
+        <div class="w-full bg-gray-700 p-5 rounded-lg border border-gray-600 mb-6">
+            <label for="renderSizeHint" class="block text-sm font-bold text-gray-200 mb-2">
+                AudioContext renderSizeHint:
+            </label>
+            <div class="flex items-center gap-4">
+                <input type="number" id="renderSizeHint" value="128" min="1" class="bg-gray-800 text-white font-mono px-3 py-2 rounded border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500 w-24">
+                <span class="text-xs text-gray-400 leading-tight">
+                    Frames per quantum (e.g., 128, 480).<br>Passed directly to the AudioContext constructor.
+                </span>
+            </div>
+        </div>
 
         <div class="flex flex-col items-center gap-4">
             <div class="flex flex-col md:flex-row gap-4 w-full justify-center">
@@ -80,6 +92,7 @@
         const startMediaBtn = document.getElementById('startMediaBtn');
         const stopMediaBtn = document.getElementById('stopMediaBtn');
         const statusEl = document.getElementById('status');
+        const renderSizeHintInput = document.getElementById('renderSizeHint');
 
         // WebAudio Listeners
         startBtn.addEventListener('click', async () => {
@@ -87,7 +100,15 @@
                 if (htmlAudioElement) stopMediaBtn.click(); // Stop the other one if running
                 statusEl.innerText = "Status: Initializing WebAudio & Downloading MP3...";
                 
-                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                const sizeHintVal = parseInt(renderSizeHintInput.value, 10);
+                const contextOptions = {
+                    sampleRate: 48000 // Force 48kHz sample rate
+                };
+                if (!isNaN(sizeHintVal) && sizeHintVal > 0) {
+                    contextOptions.renderSizeHint = sizeHintVal;
+                }
+
+                audioContext = new (window.AudioContext || window.webkitAudioContext)(contextOptions);
                 
                 // Fetch and decode the MP3
                 const resp = await fetch(AUDIO_URL);
