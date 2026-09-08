@@ -38,6 +38,11 @@
                 </select>
             </div>
             
+            <div id="wakeIntervalContainer" class="flex items-center space-x-3 bg-gray-50 p-3 rounded-lg border border-gray-200 w-full justify-center transition-opacity opacity-50">
+                <label for="wakeInterval" class="font-medium text-gray-700">Worker Sleep Interval (ms):</label>
+                <input type="number" id="wakeInterval" value="0" min="0" max="1000" step="1" disabled class="border border-gray-300 rounded-md py-1 px-2 w-24 text-sm focus:ring focus:ring-blue-200 outline-none text-gray-700 text-center" title="Only applies to Web Worker mode. Sets delay between processing chunks.">
+            </div>
+
             <div class="flex items-center space-x-3 bg-gray-50 p-3 rounded-lg border border-gray-200 w-full justify-center">
                 <label for="iterations" class="font-medium text-gray-700">Workload Iterations per block:</label>
                 <input type="number" id="iterations" value="4000" min="100" max="100000" step="100" class="border border-gray-300 rounded-md py-1 px-2 w-24 text-sm focus:ring focus:ring-blue-200 outline-none text-gray-700 text-center">
@@ -199,6 +204,7 @@
             let workloadSize = 4000; 
             let state = new Float32Array(100000);
             let isRunning = false;
+            let sleepTime = 0;
             
             for(let i=0; i < state.length; i++) {
                  state[i] = 0.5;
@@ -250,7 +256,7 @@
                 });
 
                 // Yield to event loop briefly so messages can process without totally locking the thread
-                setTimeout(processChunk, 0); 
+                setTimeout(processChunk, sleepTime); 
             }
 
             self.onmessage = (event) => {
@@ -266,6 +272,8 @@
                     processChunk();
                 } else if (event.data.type === 'stop') {
                     isRunning = false;
+                } else if (event.data.type === 'setWakeInterval') {
+                    sleepTime = event.data.value;
                 }
             };
         `;
@@ -280,6 +288,8 @@
         const threadTypeSelect = document.getElementById('threadType');
         const latencyContainer = document.getElementById('latencyContainer');
         const latencyHintSelect = document.getElementById('latencyHint');
+        const wakeIntervalContainer = document.getElementById('wakeIntervalContainer');
+        const wakeIntervalInput = document.getElementById('wakeInterval');
         const iterationsInput = document.getElementById('iterations');
 
         let audioCtx;
@@ -357,6 +367,7 @@
                     };
                     
                     testWorker.postMessage({ type: 'setIterations', value: parseInt(iterationsInput.value) });
+                    testWorker.postMessage({ type: 'setWakeInterval', value: parseInt(wakeIntervalInput.value) });
                     testWorker.postMessage({ type: 'start' });
                     log(`Web Worker Test running.`);
                 }
@@ -392,9 +403,11 @@
             modeToggle.disabled = true;
             threadTypeSelect.disabled = false;
             
-            // Only re-enable latency hint if AudioWorklet is selected
+            // Re-enable respective controls based on selected mode
             if (threadTypeSelect.value === 'worklet') {
                 latencyHintSelect.disabled = false;
+            } else {
+                wakeIntervalInput.disabled = false;
             }
             
             log("Test stopped.");
@@ -407,12 +420,27 @@
             if (e.target.value === 'worker') {
                 latencyHintSelect.disabled = true;
                 latencyContainer.classList.add('opacity-50');
+                wakeIntervalInput.disabled = false;
+                wakeIntervalContainer.classList.remove('opacity-50');
             } else {
                 latencyHintSelect.disabled = false;
                 latencyContainer.classList.remove('opacity-50');
+                wakeIntervalInput.disabled = true;
+                wakeIntervalContainer.classList.add('opacity-50');
             }
         });
         
+        wakeIntervalInput.addEventListener('change', (e) => {
+            let val = parseInt(e.target.value);
+            if (isNaN(val) || val < 0) val = 0;
+            e.target.value = val;
+            
+            log(`Worker sleep interval changed to ${val}ms.`);
+            if (testWorker) {
+                testWorker.postMessage({ type: 'setWakeInterval', value: val });
+            }
+        });
+
         modeToggle.addEventListener('change', (e) => {
             const isSubnormal = e.target.checked;
             log(`Switching to ${isSubnormal ? 'SUBNORMAL' : 'NORMAL'} mode.`);
