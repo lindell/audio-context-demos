@@ -22,6 +22,14 @@
 
         <div class="flex flex-col items-center mb-8 space-y-4">
             <div class="flex items-center space-x-3 bg-gray-50 p-3 rounded-lg border border-gray-200 w-full justify-center">
+                <label for="threadType" class="font-medium text-gray-700">Execution Thread:</label>
+                <select id="threadType" class="border border-gray-300 rounded-md py-1 px-2 text-sm focus:ring focus:ring-blue-200 outline-none text-gray-700">
+                    <option value="worklet">Audio Worklet (Real-time Audio)</option>
+                    <option value="worker">Web Worker (Standard Background)</option>
+                </select>
+            </div>
+
+            <div id="latencyContainer" class="flex items-center space-x-3 bg-gray-50 p-3 rounded-lg border border-gray-200 w-full justify-center transition-opacity">
                 <label for="latencyHint" class="font-medium text-gray-700">AudioContext Latency Hint:</label>
                 <select id="latencyHint" class="border border-gray-300 rounded-md py-1 px-2 text-sm focus:ring focus:ring-blue-200 outline-none text-gray-700">
                     <option value="interactive">Interactive (Default, Low Latency)</option>
@@ -185,6 +193,83 @@
             registerProcessor('subnormal-processor', SubnormalProcessor);
         `;
 
+        // We also define a Web Worker version of the same mathematical workload to compare thread scheduling
+        const workerCode = `
+            let isSubnormalMode = false;
+            let workloadSize = 4000; 
+            let state = new Float32Array(100000);
+            let isRunning = false;
+            
+            for(let i=0; i < state.length; i++) {
+                 state[i] = 0.5;
+            }
+
+            function resetStateArray() {
+                if (isSubnormalMode) {
+                    for(let i=0; i < workloadSize; i++) { state[i] = 1e-40; }
+                } else {
+                    for(let i=0; i < workloadSize; i++) { state[i] = 0.5; }
+                }
+            }
+
+            function processChunk() {
+                if (!isRunning) return;
+
+                let accDuration = 0;
+                const blocks = 34; // Process in chunks to mimic the Worklet's block-by-block reporting
+                const now = typeof performance !== 'undefined' ? performance.now.bind(performance) : Date.now;
+
+                for (let b = 0; b < blocks; b++) {
+                    const startMs = now();
+                    
+                    // Simulate exactly what the AudioWorklet does: 2 channels, 128 samples
+                    for (let channel = 0; channel < 2; ++channel) {
+                        for (let i = 0; i < 128; ++i) {
+                            let sum = 0;
+                            for(let j=0; j < workloadSize; j++) {
+                                state[j] = state[j] * 0.999999; 
+                                sum += state[j];
+                                
+                                if (isSubnormalMode && state[j] === 0) {
+                                     state[j] = 1e-40;
+                                } else if (!isSubnormalMode && state[j] < 1e-10) {
+                                     state[j] = 0.5;
+                                }
+                            }
+                        }
+                    }
+                    
+                    const endMs = now();
+                    accDuration += (endMs - startMs);
+                }
+
+                postMessage({
+                    type: 'stats',
+                    duration: accDuration / blocks,
+                    mode: isSubnormalMode ? 'subnormal' : 'normal'
+                });
+
+                // Yield to event loop briefly so messages can process without totally locking the thread
+                setTimeout(processChunk, 0); 
+            }
+
+            self.onmessage = (event) => {
+                if (event.data.type === 'setMode') {
+                    isSubnormalMode = event.data.value;
+                    resetStateArray();
+                } else if (event.data.type === 'setIterations') {
+                    workloadSize = Math.min(100000, Math.max(10, event.data.value));
+                    resetStateArray();
+                } else if (event.data.type === 'start') {
+                    isRunning = true;
+                    resetStateArray();
+                    processChunk();
+                } else if (event.data.type === 'stop') {
+                    isRunning = false;
+                }
+            };
+        `;
+
         // UI Elements
         const startBtn = document.getElementById('startBtn');
         const stopBtn = document.getElementById('stopBtn');
@@ -192,11 +277,14 @@
         const logEl = document.getElementById('log');
         const timeNormalEl = document.getElementById('timeNormal');
         const timeSubnormalEl = document.getElementById('timeSubnormal');
+        const threadTypeSelect = document.getElementById('threadType');
+        const latencyContainer = document.getElementById('latencyContainer');
         const latencyHintSelect = document.getElementById('latencyHint');
         const iterationsInput = document.getElementById('iterations');
 
         let audioCtx;
         let workletNode;
+        let testWorker;
         
         // Stats tracking using Exponential Moving Average
         const stats = {
@@ -228,41 +316,57 @@
             }
         }
 
-        async function startAudio() {
+        async function startTest() {
+            const threadType = threadTypeSelect.value;
+            
             try {
-                const latencyValue = latencyHintSelect.value;
-                audioCtx = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: latencyValue });
-                
-                // Create a blob URL for our worklet code
-                const blob = new Blob([workletCode], { type: 'application/javascript' });
-                const blobUrl = URL.createObjectURL(blob);
-                
-                log("Adding AudioWorklet module...");
-                await audioCtx.audioWorklet.addModule(blobUrl);
-                
-                log("Module loaded. Creating processing node...");
-                workletNode = new AudioWorkletNode(audioCtx, 'subnormal-processor');
-                
-                // Connect to destination (speakers) so it actually processes
-                // We multiply by 0 in the worklet so it will be silent.
-                workletNode.connect(audioCtx.destination);
-                
-                workletNode.port.onmessage = (event) => {
-                    if (event.data.type === 'stats') {
-                        updateStatsDisplay(event.data.mode, event.data.duration);
-                    }
-                };
-                
-                // Initialize iterations with current input value
-                workletNode.port.postMessage({ type: 'setIterations', value: parseInt(iterationsInput.value) });
+                if (threadType === 'worklet') {
+                    const latencyValue = latencyHintSelect.value;
+                    audioCtx = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: latencyValue });
+                    
+                    const blob = new Blob([workletCode], { type: 'application/javascript' });
+                    const blobUrl = URL.createObjectURL(blob);
+                    
+                    log("Adding AudioWorklet module...");
+                    await audioCtx.audioWorklet.addModule(blobUrl);
+                    
+                    log("Module loaded. Creating processing node...");
+                    workletNode = new AudioWorkletNode(audioCtx, 'subnormal-processor');
+                    workletNode.connect(audioCtx.destination);
+                    
+                    workletNode.port.onmessage = (event) => {
+                        if (event.data.type === 'stats') {
+                            updateStatsDisplay(event.data.mode, event.data.duration);
+                        }
+                    };
+                    
+                    workletNode.port.postMessage({ type: 'setIterations', value: parseInt(iterationsInput.value) });
+                    log(`AudioWorklet Test running. Latency Hint: ${latencyValue}.`);
+                    
+                } else {
+                    log("Starting background Web Worker...");
+                    const blob = new Blob([workerCode], { type: 'application/javascript' });
+                    const blobUrl = URL.createObjectURL(blob);
+                    
+                    testWorker = new Worker(blobUrl);
+                    
+                    testWorker.onmessage = (event) => {
+                        if (event.data.type === 'stats') {
+                            updateStatsDisplay(event.data.mode, event.data.duration);
+                        }
+                    };
+                    
+                    testWorker.postMessage({ type: 'setIterations', value: parseInt(iterationsInput.value) });
+                    testWorker.postMessage({ type: 'start' });
+                    log(`Web Worker Test running.`);
+                }
 
                 startBtn.disabled = true;
                 startBtn.classList.replace('bg-green-500', 'bg-gray-400');
                 stopBtn.disabled = false;
                 modeToggle.disabled = false;
+                threadTypeSelect.disabled = true;
                 latencyHintSelect.disabled = true;
-                
-                log(`Test running. Latency Hint: ${latencyValue}. Check performance values above.`);
                 
             } catch (err) {
                 log(`Error: ${err.message}`);
@@ -270,30 +374,53 @@
             }
         }
 
-        function stopAudio() {
+        function stopTest() {
             if (audioCtx) {
                 audioCtx.close();
                 audioCtx = null;
                 workletNode = null;
-                
-                startBtn.disabled = false;
-                startBtn.classList.replace('bg-gray-400', 'bg-green-500');
-                stopBtn.disabled = true;
-                modeToggle.disabled = true;
-                latencyHintSelect.disabled = false;
-                
-                log("Test stopped.");
             }
+            if (testWorker) {
+                testWorker.postMessage({ type: 'stop' });
+                testWorker.terminate();
+                testWorker = null;
+            }
+                
+            startBtn.disabled = false;
+            startBtn.classList.replace('bg-gray-400', 'bg-green-500');
+            stopBtn.disabled = true;
+            modeToggle.disabled = true;
+            threadTypeSelect.disabled = false;
+            
+            // Only re-enable latency hint if AudioWorklet is selected
+            if (threadTypeSelect.value === 'worklet') {
+                latencyHintSelect.disabled = false;
+            }
+            
+            log("Test stopped.");
         }
 
-        startBtn.addEventListener('click', startAudio);
-        stopBtn.addEventListener('click', stopAudio);
+        startBtn.addEventListener('click', startTest);
+        stopBtn.addEventListener('click', stopTest);
+        
+        threadTypeSelect.addEventListener('change', (e) => {
+            if (e.target.value === 'worker') {
+                latencyHintSelect.disabled = true;
+                latencyContainer.classList.add('opacity-50');
+            } else {
+                latencyHintSelect.disabled = false;
+                latencyContainer.classList.remove('opacity-50');
+            }
+        });
         
         modeToggle.addEventListener('change', (e) => {
             const isSubnormal = e.target.checked;
             log(`Switching to ${isSubnormal ? 'SUBNORMAL' : 'NORMAL'} mode.`);
             if (workletNode) {
                 workletNode.port.postMessage({ type: 'setMode', value: isSubnormal });
+            }
+            if (testWorker) {
+                testWorker.postMessage({ type: 'setMode', value: isSubnormal });
             }
             
             // Reset histories to see immediate impact upon switching
@@ -312,6 +439,9 @@
             log(`Workload iterations changed to ${val}.`);
             if (workletNode) {
                 workletNode.port.postMessage({ type: 'setIterations', value: val });
+            }
+            if (testWorker) {
+                testWorker.postMessage({ type: 'setIterations', value: val });
             }
             
             // Reset histories so we don't mix old workload averages with new ones
