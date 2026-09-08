@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AudioWorklet Subnormal Performance Test</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .log-container { max-height: 300px; overflow-y: auto; }
+    </style>
+</head>
+<body class="bg-gray-100 text-gray-800 min-h-screen flex flex-col items-center py-10">
+    <div class="max-w-2xl w-full bg-white rounded-xl shadow-lg p-8">
+        <h1 class="text-3xl font-bold mb-4 text-center text-blue-600">AudioWorklet Subnormal Test</h1>
+        
+        <p class="mb-6 text-gray-600">
+            This demo tests the performance impact of processing <strong>subnormal</strong> (denormal) floating-point numbers within an AudioWorklet. 
+            Subnormal numbers are very close to zero and historically cause severe performance degradation on many CPU architectures.
+            While we cannot explicitly force execution onto E-cores (Efficiency cores) via Web APIs, running a heavy, continuous workload might influence the OS scheduler.
+        </p>
+
+        <div class="flex flex-col items-center mb-8 space-y-4">
+            <div class="flex items-center space-x-3 bg-gray-50 p-3 rounded-lg border border-gray-200 w-full justify-center">
+                <label for="latencyHint" class="font-medium text-gray-700">AudioContext Latency Hint:</label>
+                <select id="latencyHint" class="border border-gray-300 rounded-md py-1 px-2 text-sm focus:ring focus:ring-blue-200 outline-none text-gray-700">
+                    <option value="interactive">Interactive (Default, Low Latency)</option>
+                    <option value="balanced">Balanced</option>
+                    <option value="playback">Playback (High Latency, may affect scheduling)</option>
+                </select>
+            </div>
+            
+            <div class="flex justify-center space-x-4">
+                <button id="startBtn" class="px-6 py-2 bg-green-500 text-white rounded-lg font-semibold hover:bg-green-600 transition shadow">
+                    Start Test
+                </button>
+                <button id="stopBtn" class="px-6 py-2 bg-red-500 text-white rounded-lg font-semibold hover:bg-red-600 transition shadow" disabled>
+                    Stop Test
+                </button>
+            </div>
+        </div>
+
+        <div class="mb-8 bg-gray-50 p-4 rounded-lg border border-gray-200">
+            <div class="flex items-center justify-between mb-4">
+                <span class="font-medium text-lg">Current Processing Mode:</span>
+                <div class="flex items-center space-x-2">
+                    <span class="text-sm text-gray-500">Normal</span>
+                    <label class="relative inline-flex items-center cursor-pointer">
+                      <input type="checkbox" id="modeToggle" class="sr-only peer" disabled>
+                      <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                    </label>
+                    <span class="text-sm font-bold text-blue-600">Subnormal</span>
+                </div>
+            </div>
+            
+            <div class="grid grid-cols-2 gap-4 text-center">
+                <div class="bg-white p-4 rounded border border-gray-100 shadow-sm">
+                    <p class="text-xs text-gray-500 uppercase tracking-wide">Avg Processing Time (Normal)</p>
+                    <p id="timeNormal" class="text-2xl font-mono mt-1">0.00 <span class="text-sm">ms</span></p>
+                </div>
+                <div class="bg-white p-4 rounded border border-gray-100 shadow-sm">
+                    <p class="text-xs text-gray-500 uppercase tracking-wide">Avg Processing Time (Subnormal)</p>
+                    <p id="timeSubnormal" class="text-2xl font-mono mt-1 text-red-500">0.00 <span class="text-sm">ms</span></p>
+                </div>
+            </div>
+        </div>
+
+        <div class="bg-black text-green-400 p-4 rounded-lg font-mono text-sm log-container" id="log">
+            <div>System initialized. Ready to start.</div>
+        </div>
+    </div>
+
+    <script>
+        // We define the AudioWorkletProcessor code as a string so we can load it via a Blob URL
+        // without needing a separate physical file.
+        const workletCode = `
+            class SubnormalProcessor extends AudioWorkletProcessor {
+                constructor() {
+                    super();
+                    this.isSubnormalMode = false;
+                    this.accDuration = 0;
+                    this.accCount = 0;
+                    
+                    // State variables for our dummy processing
+                    // We use an array of values to simulate a heavier workload
+                    this.numChannels = 2;
+                    this.workloadSize = 4000; // Increased to 4000 to ensure measurable execution time against browser timer rounding
+                    this.state = new Float32Array(this.workloadSize);
+                    
+                    // Initialize state with normal small numbers
+                    for(let i=0; i < this.workloadSize; i++) {
+                         this.state[i] = 0.5;
+                    }
+
+                    this.port.onmessage = (event) => {
+                        if (event.data.type === 'setMode') {
+                            this.isSubnormalMode = event.data.value;
+                            // Reset state when switching modes
+                            if (this.isSubnormalMode) {
+                                // Inject subnormal numbers (Float32 min normal is ~1.17e-38)
+                                for(let i=0; i < this.workloadSize; i++) {
+                                    this.state[i] = 1e-40; 
+                                }
+                            } else {
+                                // Inject normal numbers
+                                for(let i=0; i < this.workloadSize; i++) {
+                                    this.state[i] = 0.5; 
+                                }
+                            }
+                        }
+                    };
+                }
+
+                process(inputs, outputs, parameters) {
+                    const output = outputs[0];
+                    if (!output || !output[0]) return true;
+                    
+                    // currentTime only updates per block, so we must use a real-time clock to measure execution.
+                    // Some browsers expose performance.now() in Worklets, otherwise fallback to Date.now()
+                    const now = typeof performance !== 'undefined' ? performance.now.bind(performance) : Date.now;
+                    const startMs = now();
+                    
+                    // The workload: simulate a recursive filter or complex operation
+                    // that keeps values small.
+                    for (let channel = 0; channel < output.length; ++channel) {
+                        const outputChannel = output[channel];
+                        
+                        for (let i = 0; i < outputChannel.length; ++i) {
+                            
+                            // A dummy intensive calculation
+                            let sum = 0;
+                            for(let j=0; j < this.workloadSize; j++) {
+                                // In normal mode, this just multiplies normal numbers.
+                                // In subnormal mode, this multiplies subnormal numbers, 
+                                // often forcing CPU into slow microcode exceptions.
+                                this.state[j] = this.state[j] * 0.999999; 
+                                sum += this.state[j];
+                                
+                                // Prevent complete underflow to zero to keep it in subnormal range
+                                if (this.isSubnormalMode && this.state[j] === 0) {
+                                     this.state[j] = 1e-40;
+                                } else if (!this.isSubnormalMode && this.state[j] < 1e-10) {
+                                     // Reset to prevent natural underflow into subnormal territory during normal mode
+                                     this.state[j] = 0.5;
+                                }
+                            }
+                            
+                            // We don't actually care about the audio output, just the computation
+                            outputChannel[i] = sum * 0; 
+                        }
+                    }
+                    
+                    const endMs = now();
+                    const durationMs = endMs - startMs;
+                    
+                    this.accDuration += durationMs;
+                    this.accCount++;
+                    
+                    // Send performance metrics roughly 10 times per second
+                    // AudioWorklet renders ~344 blocks per sec at 44.1kHz. 34 blocks is ~0.1 seconds.
+                    if (this.accCount >= 34) { 
+                        this.port.postMessage({
+                            type: 'stats',
+                            duration: this.accDuration / this.accCount,
+                            mode: this.isSubnormalMode ? 'subnormal' : 'normal'
+                        });
+                        this.accDuration = 0;
+                        this.accCount = 0;
+                    }
+
+                    return true; // Keep processor alive
+                }
+            }
+
+            registerProcessor('subnormal-processor', SubnormalProcessor);
+        `;
+
+        // UI Elements
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const modeToggle = document.getElementById('modeToggle');
+        const logEl = document.getElementById('log');
+        const timeNormalEl = document.getElementById('timeNormal');
+        const timeSubnormalEl = document.getElementById('timeSubnormal');
+        const latencyHintSelect = document.getElementById('latencyHint');
+
+        let audioCtx;
+        let workletNode;
+        
+        // Stats tracking using Exponential Moving Average
+        const stats = {
+            normal: { ema: null },
+            subnormal: { ema: null }
+        };
+
+        function log(msg) {
+            const div = document.createElement('div');
+            const time = new Date().toLocaleTimeString();
+            div.textContent = `[${time}] ${msg}`;
+            logEl.appendChild(div);
+            logEl.scrollTop = logEl.scrollHeight;
+        }
+
+        function updateStatsDisplay(mode, duration) {
+            if (stats[mode].ema === null) {
+                stats[mode].ema = duration;
+            } else {
+                // Blend 15% of the new value with 85% of the old value for smooth tracking
+                stats[mode].ema = (duration * 0.15) + (stats[mode].ema * 0.85);
+            }
+            
+            // Show 4 decimal places since the workload is quite small now
+            if (mode === 'normal') {
+                timeNormalEl.textContent = stats.normal.ema.toFixed(4);
+            } else {
+                timeSubnormalEl.textContent = stats.subnormal.ema.toFixed(4);
+            }
+        }
+
+        async function startAudio() {
+            try {
+                const latencyValue = latencyHintSelect.value;
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: latencyValue });
+                
+                // Create a blob URL for our worklet code
+                const blob = new Blob([workletCode], { type: 'application/javascript' });
+                const blobUrl = URL.createObjectURL(blob);
+                
+                log("Adding AudioWorklet module...");
+                await audioCtx.audioWorklet.addModule(blobUrl);
+                
+                log("Module loaded. Creating processing node...");
+                workletNode = new AudioWorkletNode(audioCtx, 'subnormal-processor');
+                
+                // Connect to destination (speakers) so it actually processes
+                // We multiply by 0 in the worklet so it will be silent.
+                workletNode.connect(audioCtx.destination);
+                
+                workletNode.port.onmessage = (event) => {
+                    if (event.data.type === 'stats') {
+                        updateStatsDisplay(event.data.mode, event.data.duration);
+                    }
+                };
+
+                startBtn.disabled = true;
+                startBtn.classList.replace('bg-green-500', 'bg-gray-400');
+                stopBtn.disabled = false;
+                modeToggle.disabled = false;
+                latencyHintSelect.disabled = true;
+                
+                log(`Test running. Latency Hint: ${latencyValue}. Check performance values above.`);
+                
+            } catch (err) {
+                log(`Error: ${err.message}`);
+                console.error(err);
+            }
+        }
+
+        function stopAudio() {
+            if (audioCtx) {
+                audioCtx.close();
+                audioCtx = null;
+                workletNode = null;
+                
+                startBtn.disabled = false;
+                startBtn.classList.replace('bg-gray-400', 'bg-green-500');
+                stopBtn.disabled = true;
+                modeToggle.disabled = true;
+                latencyHintSelect.disabled = false;
+                
+                log("Test stopped.");
+            }
+        }
+
+        startBtn.addEventListener('click', startAudio);
+        stopBtn.addEventListener('click', stopAudio);
+        
+        modeToggle.addEventListener('change', (e) => {
+            const isSubnormal = e.target.checked;
+            log(`Switching to ${isSubnormal ? 'SUBNORMAL' : 'NORMAL'} mode.`);
+            if (workletNode) {
+                workletNode.port.postMessage({ type: 'setMode', value: isSubnormal });
+            }
+            
+            // Reset histories to see immediate impact upon switching
+            stats.normal.ema = null;
+            stats.subnormal.ema = null;
+            timeNormalEl.textContent = "0.0000";
+            timeSubnormalEl.textContent = "0.0000";
+        });
+
+    </script>
+</body>
+</html>
