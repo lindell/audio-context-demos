@@ -30,6 +30,11 @@
                 </select>
             </div>
             
+            <div class="flex items-center space-x-3 bg-gray-50 p-3 rounded-lg border border-gray-200 w-full justify-center">
+                <label for="iterations" class="font-medium text-gray-700">Workload Iterations per block:</label>
+                <input type="number" id="iterations" value="4000" min="100" max="100000" step="100" class="border border-gray-300 rounded-md py-1 px-2 w-24 text-sm focus:ring focus:ring-blue-200 outline-none text-gray-700 text-center">
+            </div>
+            
             <div class="flex justify-center space-x-4">
                 <button id="startBtn" class="px-6 py-2 bg-green-500 text-white rounded-lg font-semibold hover:bg-green-600 transition shadow">
                     Start Test
@@ -82,33 +87,38 @@
                     this.accCount = 0;
                     
                     // State variables for our dummy processing
-                    // We use an array of values to simulate a heavier workload
                     this.numChannels = 2;
-                    this.workloadSize = 4000; // Increased to 4000 to ensure measurable execution time against browser timer rounding
-                    this.state = new Float32Array(this.workloadSize);
+                    this.workloadSize = 4000; 
+                    this.state = new Float32Array(100000); // Allocate max array size upfront
                     
                     // Initialize state with normal small numbers
-                    for(let i=0; i < this.workloadSize; i++) {
+                    for(let i=0; i < this.state.length; i++) {
                          this.state[i] = 0.5;
                     }
 
                     this.port.onmessage = (event) => {
                         if (event.data.type === 'setMode') {
                             this.isSubnormalMode = event.data.value;
-                            // Reset state when switching modes
-                            if (this.isSubnormalMode) {
-                                // Inject subnormal numbers (Float32 min normal is ~1.17e-38)
-                                for(let i=0; i < this.workloadSize; i++) {
-                                    this.state[i] = 1e-40; 
-                                }
-                            } else {
-                                // Inject normal numbers
-                                for(let i=0; i < this.workloadSize; i++) {
-                                    this.state[i] = 0.5; 
-                                }
-                            }
+                            this._resetStateArray();
+                        } else if (event.data.type === 'setIterations') {
+                            this.workloadSize = Math.min(100000, Math.max(10, event.data.value));
+                            this._resetStateArray();
                         }
                     };
+                }
+
+                _resetStateArray() {
+                    if (this.isSubnormalMode) {
+                        // Inject subnormal numbers (Float32 min normal is ~1.17e-38)
+                        for(let i=0; i < this.workloadSize; i++) {
+                            this.state[i] = 1e-40; 
+                        }
+                    } else {
+                        // Inject normal numbers
+                        for(let i=0; i < this.workloadSize; i++) {
+                            this.state[i] = 0.5; 
+                        }
+                    }
                 }
 
                 process(inputs, outputs, parameters) {
@@ -183,6 +193,7 @@
         const timeNormalEl = document.getElementById('timeNormal');
         const timeSubnormalEl = document.getElementById('timeSubnormal');
         const latencyHintSelect = document.getElementById('latencyHint');
+        const iterationsInput = document.getElementById('iterations');
 
         let audioCtx;
         let workletNode;
@@ -241,6 +252,9 @@
                         updateStatsDisplay(event.data.mode, event.data.duration);
                     }
                 };
+                
+                // Initialize iterations with current input value
+                workletNode.port.postMessage({ type: 'setIterations', value: parseInt(iterationsInput.value) });
 
                 startBtn.disabled = true;
                 startBtn.classList.replace('bg-green-500', 'bg-gray-400');
@@ -283,6 +297,24 @@
             }
             
             // Reset histories to see immediate impact upon switching
+            stats.normal.ema = null;
+            stats.subnormal.ema = null;
+            timeNormalEl.textContent = "0.0000";
+            timeSubnormalEl.textContent = "0.0000";
+        });
+        
+        iterationsInput.addEventListener('change', (e) => {
+            let val = parseInt(e.target.value);
+            if (isNaN(val) || val < 10) val = 10;
+            if (val > 100000) val = 100000;
+            e.target.value = val;
+            
+            log(`Workload iterations changed to ${val}.`);
+            if (workletNode) {
+                workletNode.port.postMessage({ type: 'setIterations', value: val });
+            }
+            
+            // Reset histories so we don't mix old workload averages with new ones
             stats.normal.ema = null;
             stats.subnormal.ema = null;
             timeNormalEl.textContent = "0.0000";
