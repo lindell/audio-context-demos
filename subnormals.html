@@ -110,7 +110,7 @@
                     // State variables for our dummy processing
                     this.numChannels = 2;
                     this.workloadSize = 4000; 
-                    this.state = new Float32Array(100000); // Allocate max array size upfront
+                    this.state = new Float64Array(100000); // Use Float64 to hit true JS double-precision subnormals
                     
                     // Initialize state with normal small numbers
                     for(let i=0; i < this.state.length; i++) {
@@ -130,9 +130,9 @@
 
                 _resetStateArray() {
                     if (this.isSubnormalMode) {
-                        // Inject subnormal numbers (Float32 min normal is ~1.17e-38)
+                        // Inject true Float64 subnormal numbers (Float64 min normal is ~2.22e-308)
                         for(let i=0; i < this.workloadSize; i++) {
-                            this.state[i] = 1e-40; 
+                            this.state[i] = 1e-320; 
                         }
                     } else {
                         // Inject normal numbers
@@ -169,7 +169,7 @@
                                 
                                 // Prevent complete underflow to zero to keep it in subnormal range
                                 if (this.isSubnormalMode && this.state[j] === 0) {
-                                     this.state[j] = 1e-40;
+                                     this.state[j] = 1e-320;
                                 } else if (!this.isSubnormalMode && this.state[j] < 1e-10) {
                                      // Reset to prevent natural underflow into subnormal territory during normal mode
                                      this.state[j] = 0.5;
@@ -210,7 +210,7 @@
         const workerCode = `
             let isSubnormalMode = false;
             let workloadSize = 4000; 
-            let state = new Float32Array(100000);
+            let state = new Float64Array(100000); // Use Float64 to hit true JS double-precision subnormals
             let isRunning = false;
             let sleepTime = 0;
             let profile = 'yield';
@@ -226,7 +226,7 @@
 
             function resetStateArray() {
                 if (isSubnormalMode) {
-                    for(let i=0; i < workloadSize; i++) { state[i] = 1e-40; }
+                    for(let i=0; i < workloadSize; i++) { state[i] = 1e-320; }
                 } else {
                     for(let i=0; i < workloadSize; i++) { state[i] = 0.5; }
                 }
@@ -251,7 +251,7 @@
                                 sum += state[j];
                                 
                                 if (isSubnormalMode && state[j] === 0) {
-                                     state[j] = 1e-40;
+                                     state[j] = 1e-320;
                                 } else if (!isSubnormalMode && state[j] < 1e-10) {
                                      state[j] = 0.5;
                                 }
