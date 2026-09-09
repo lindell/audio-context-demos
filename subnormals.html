@@ -43,6 +43,14 @@
                 <input type="number" id="wakeInterval" value="0" min="0" max="1000" step="1" disabled class="border border-gray-300 rounded-md py-1 px-2 w-24 text-sm focus:ring focus:ring-blue-200 outline-none text-gray-700 text-center" title="Only applies to Web Worker mode. Sets delay between processing chunks.">
             </div>
 
+            <div id="workerProfileContainer" class="flex items-center space-x-3 bg-gray-50 p-3 rounded-lg border border-gray-200 w-full justify-center transition-opacity opacity-50">
+                <label for="workerProfile" class="font-medium text-gray-700">Worker Profile:</label>
+                <select id="workerProfile" disabled class="border border-gray-300 rounded-md py-1 px-2 text-sm focus:ring focus:ring-blue-200 outline-none text-gray-700" title="Changes how the worker loops. Aggressive pins CPU at 100% to hint for P-Cores.">
+                    <option value="hot">Aggressive / Spin (P-Core Hint)</option>
+                    <option value="yield" selected>Yielding / Sleep (E-Core Hint)</option>
+                </select>
+            </div>
+
             <div class="flex items-center space-x-3 bg-gray-50 p-3 rounded-lg border border-gray-200 w-full justify-center">
                 <label for="iterations" class="font-medium text-gray-700">Workload Iterations per block:</label>
                 <input type="number" id="iterations" value="4000" min="100" max="100000" step="100" class="border border-gray-300 rounded-md py-1 px-2 w-24 text-sm focus:ring focus:ring-blue-200 outline-none text-gray-700 text-center">
@@ -205,6 +213,12 @@
             let state = new Float32Array(100000);
             let isRunning = false;
             let sleepTime = 0;
+            let profile = 'yield';
+            
+            // MessageChannel trick to bypass setTimeout's 4ms minimum clamping
+            // and keep the thread event loop spinning as hot as possible
+            const channel = new MessageChannel();
+            channel.port1.onmessage = () => { if(isRunning) processChunk(); };
             
             for(let i=0; i < state.length; i++) {
                  state[i] = 0.5;
@@ -255,8 +269,20 @@
                     mode: isSubnormalMode ? 'subnormal' : 'normal'
                 });
 
-                // Yield to event loop briefly so messages can process without totally locking the thread
-                setTimeout(processChunk, sleepTime); 
+                if (profile === 'hot') {
+                    // P-CORE HINT: Do not yield to the OS. 
+                    // If a sleep interval is set, busy-wait (spin) to burn CPU cycles and keep it at 100%.
+                    if (sleepTime > 0) {
+                        const wakeTime = now() + sleepTime;
+                        while(now() < wakeTime) { /* spin lock */ }
+                    }
+                    // Instantly queue next iteration on the micro/macro task queue without an OS-level sleep
+                    channel.port2.postMessage(null);
+                } else {
+                    // E-CORE HINT: Yield to event loop and OS.
+                    // Allows the thread to sleep, reducing CPU usage and encouraging E-core migration.
+                    setTimeout(processChunk, sleepTime); 
+                }
             }
 
             self.onmessage = (event) => {
@@ -269,11 +295,14 @@
                 } else if (event.data.type === 'start') {
                     isRunning = true;
                     resetStateArray();
-                    processChunk();
+                    if (profile === 'hot') channel.port2.postMessage(null);
+                    else processChunk();
                 } else if (event.data.type === 'stop') {
                     isRunning = false;
                 } else if (event.data.type === 'setWakeInterval') {
                     sleepTime = event.data.value;
+                } else if (event.data.type === 'setProfile') {
+                    profile = event.data.value;
                 }
             };
         `;
@@ -290,6 +319,8 @@
         const latencyHintSelect = document.getElementById('latencyHint');
         const wakeIntervalContainer = document.getElementById('wakeIntervalContainer');
         const wakeIntervalInput = document.getElementById('wakeInterval');
+        const workerProfileContainer = document.getElementById('workerProfileContainer');
+        const workerProfileSelect = document.getElementById('workerProfile');
         const iterationsInput = document.getElementById('iterations');
 
         let audioCtx;
@@ -368,8 +399,9 @@
                     
                     testWorker.postMessage({ type: 'setIterations', value: parseInt(iterationsInput.value) });
                     testWorker.postMessage({ type: 'setWakeInterval', value: parseInt(wakeIntervalInput.value) });
+                    testWorker.postMessage({ type: 'setProfile', value: workerProfileSelect.value });
                     testWorker.postMessage({ type: 'start' });
-                    log(`Web Worker Test running.`);
+                    log(`Web Worker Test running. Profile: ${workerProfileSelect.value}`);
                 }
 
                 startBtn.disabled = true;
@@ -408,6 +440,7 @@
                 latencyHintSelect.disabled = false;
             } else {
                 wakeIntervalInput.disabled = false;
+                workerProfileSelect.disabled = false;
             }
             
             log("Test stopped.");
@@ -422,11 +455,15 @@
                 latencyContainer.classList.add('opacity-50');
                 wakeIntervalInput.disabled = false;
                 wakeIntervalContainer.classList.remove('opacity-50');
+                workerProfileSelect.disabled = false;
+                workerProfileContainer.classList.remove('opacity-50');
             } else {
                 latencyHintSelect.disabled = false;
                 latencyContainer.classList.remove('opacity-50');
                 wakeIntervalInput.disabled = true;
                 wakeIntervalContainer.classList.add('opacity-50');
+                workerProfileSelect.disabled = true;
+                workerProfileContainer.classList.add('opacity-50');
             }
         });
         
@@ -438,6 +475,13 @@
             log(`Worker sleep interval changed to ${val}ms.`);
             if (testWorker) {
                 testWorker.postMessage({ type: 'setWakeInterval', value: val });
+            }
+        });
+
+        workerProfileSelect.addEventListener('change', (e) => {
+            log(`Worker profile changed to ${e.target.value === 'hot' ? 'Aggressive' : 'Yielding'}.`);
+            if (testWorker) {
+                testWorker.postMessage({ type: 'setProfile', value: e.target.value });
             }
         });
 
