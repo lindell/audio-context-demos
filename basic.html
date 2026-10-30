@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Basic Audio Worklet</title>
+</head>
+<body>
+  <button id="playBtn">Play / Stop Tone</button>
+
+  <script>
+    let audioCtx = null;
+    let isPlaying = false;
+
+    document.getElementById('playBtn').addEventListener('click', async () => {
+      if (!audioCtx) {
+        // 1. Create the AudioContext
+        audioCtx = new AudioContext();
+
+        // 2. Load the external JS file as an AudioWorklet module
+        await audioCtx.audioWorklet.addModule('https://lindell.me/audio-context-demos/basic.js');
+
+        // 3. Instantiate the AudioWorkletNode and connect to speakers
+        const workletNode = new AudioWorkletNode(audioCtx, 'basic-tone-processor');
+        workletNode.connect(audioCtx.destination);
+        isPlaying = true;
+        return;
+      }
+
+      // Toggle pause/resume on subsequent clicks
+      if (isPlaying) {
+        await audioCtx.suspend();
+      } else {
+        await audioCtx.resume();
+      }
+      isPlaying = !isPlaying;
+    });
+  </script>
+</body>
+</html>
